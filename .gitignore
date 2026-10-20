@@ -3,3 +3,5 @@ data/*.json
 data/*.log
 data/backups
 data-demo
+.vercel
+.env*

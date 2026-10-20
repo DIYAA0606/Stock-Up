@@ -1,8 +1,10 @@
 {
   "version": 2,
-  "functions": {
-    "api/*.js": {
-      "includeFiles": "data/**"
+  "framework": null,
+  "rewrites": [
+    {
+      "source": "/api/:match*",
+      "destination": "/api"
     }
-  }
+  ]
 }

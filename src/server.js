@@ -96,8 +96,6 @@ export function createRequestHandler(store) {
     const m = req.method;
     const p = url.pathname;
 
-    if (m === 'GET' && (p === '/api' || p === '/api/')) return json(res, 200, { ok: true, name: 'guess-the-growth' });
-
     if (m === 'GET' && p === '/api/board') return json(res, 200, app.buildBoard(st()));
 
     if (m === 'POST' && p === '/api/login') {
@@ -196,44 +194,28 @@ export function createRequestHandler(store) {
   }
 
   function serveStatic(req, res, url) {
-    return new Promise((resolve) => {
-      let rel = decodeURIComponent(url.pathname);
-      if (rel === '/') rel = '/index.html';
-      const file = path.normalize(path.join(PUBLIC, rel));
-      if (!file.startsWith(PUBLIC + path.sep)) {
-        res.writeHead(403);
-        res.end('Forbidden');
-        return resolve();
+    let rel = decodeURIComponent(url.pathname);
+    if (rel === '/') rel = '/index.html';
+    const file = path.normalize(path.join(PUBLIC, rel));
+    if (!file.startsWith(PUBLIC + path.sep)) {
+      res.writeHead(403);
+      return res.end('Forbidden');
+    }
+    fs.readFile(file, (err, data) => {
+      if (err) {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        return res.end('Not found');
       }
-      fs.readFile(file, (err, data) => {
-        if (err) {
-          res.writeHead(404, { 'Content-Type': 'text/plain' });
-          res.end('Not found');
-          return resolve();
-        }
-        res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
-        res.end(data);
-        resolve();
-      });
+      res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
+      res.end(data);
     });
   }
 
   return async (req, res) => {
     const url = new URL(req.url, 'http://x');
     try {
-      let pathname = url.pathname;
-      if (pathname === '/api' || pathname.startsWith('/api/[')) {
-        if (req.query?.path) {
-          const sub = Array.isArray(req.query.path) ? req.query.path.join('/') : req.query.path;
-          pathname = '/api/' + sub.replace(/^\/+/, '');
-        } else if (url.searchParams.get('path')) {
-          pathname = '/api/' + url.searchParams.get('path').replace(/^\/+/, '');
-        }
-      }
-      url.pathname = pathname;
-
-      if (url.pathname.startsWith('/api')) return await api(req, res, url);
-      return await serveStatic(req, res, url);
+      if (url.pathname.startsWith('/api/')) return await api(req, res, url);
+      return serveStatic(req, res, url);
     } catch (e) {
       if (e instanceof app.HttpError) return json(res, e.status, { error: e.message, ...e.extra });
       console.error(e);
