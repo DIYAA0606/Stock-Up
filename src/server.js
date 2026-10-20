@@ -29,6 +29,16 @@ function roleOf(store, req) {
 }
 
 function readBody(req) {
+  if (req.body !== undefined && req.body !== null) {
+    if (typeof req.body === 'object') return Promise.resolve(req.body);
+    if (typeof req.body === 'string') {
+      try {
+        return Promise.resolve(JSON.parse(req.body));
+      } catch {
+        return Promise.reject(new app.HttpError(400, 'Body is not valid JSON'));
+      }
+    }
+  }
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
@@ -51,7 +61,7 @@ function readBody(req) {
   });
 }
 
-export function createApp(store) {
+export function createRequestHandler(store) {
   const st = () => store.state;
   const fails = new Map(); // ip -> [timestamps] ; slows down PIN guessing
 
@@ -61,7 +71,8 @@ export function createApp(store) {
   };
 
   function need(req, res, ...roles) {
-    const ip = req.socket.remoteAddress || '?';
+    const rawIp = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '?');
+    const ip = rawIp.split(',')[0].trim();
     const recent = (fails.get(ip) || []).filter((t) => Date.now() - t < 60_000);
     fails.set(ip, recent);
     if (recent.length >= 15) throw new app.HttpError(429, 'Too many wrong PINs. Wait a minute.');
@@ -200,7 +211,7 @@ export function createApp(store) {
     });
   }
 
-  return http.createServer(async (req, res) => {
+  return async (req, res) => {
     const url = new URL(req.url, 'http://x');
     try {
       if (url.pathname.startsWith('/api/')) return await api(req, res, url);
@@ -210,7 +221,11 @@ export function createApp(store) {
       console.error(e);
       return json(res, 500, { error: 'Server error: ' + e.message });
     }
-  });
+  };
+}
+
+export function createApp(store) {
+  return http.createServer(createRequestHandler(store));
 }
 
 // ---- run directly: node src/server.js ----
