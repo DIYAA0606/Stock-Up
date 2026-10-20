@@ -1,0 +1,14 @@
+{
+  "name": "guess-the-growth",
+  "version": "1.0.0",
+  "description": "Coordinator-entry portfolio calculator and live leaderboard for the Guess the Growth event",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test",
+    "demo": "node scripts/demo.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

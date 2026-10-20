@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guess the Growth – Projector</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="display">
+<header class="d-top">
+  <div class="brand" style="font-size:30px">Guess the <b>Growth</b></div>
+  <div class="d-phase"><div class="label" id="label"></div><div class="sub" id="sub"></div></div>
+  <div class="d-timer num" id="timer"></div>
+</header>
+<main class="d-main" id="main"></main>
+<script type="module">
+import { esc, fmt, pctText, makeClock, mmss } from '/common.js';
+
+const clock = makeClock();
+let board = null;
+let lastKey = '';
+
+function leaderboard(b) {
+  if (b.revealedThrough === 0) {
+    return `<div class="empty-news">The leaderboard opens after Quarter 1 results.</div>`;
+  }
+  const n = b.teams.length;
+  const two = n > 12;
+  const per = two ? Math.ceil(n / 2) : n;
+  const fs = per <= 8 ? 30 : per <= 12 ? 27 : per <= 16 ? 23 : 19;
+  const rows = b.teams.map((t) => {
+    if (t.hidden) return `<div class="row-b hid"><span class="rk num">#${t.position}</span><span class="nm">?</span><span class="wv num">–</span><span class="ch"></span></div>`;
+    let ch = '';
+    if (t.change > 0) ch = `<span class="up">▲ ${t.change}</span>`;
+    else if (t.change < 0) ch = `<span class="down">▼ ${-t.change}</span>`;
+    else if (t.change === 0) ch = `<span class="muted">–</span>`;
+    return `<div class="row-b ${t.rank === 1 ? 'top1' : ''}"><span class="rk num">${t.rank}</span><span class="nm">${esc(t.name)}</span><span class="wv num">${fmt(t.worth)}</span><span class="ch num">${ch}</span></div>`;
+  });
+  return `<div class="board ${two ? 'two' : ''}" style="--fs:${fs}px;--rows:${per}">${rows.join('')}</div>`;
+}
+
+function newsHtml(b) {
+  if (!b.news.length) return `<div class="empty-news">${b.round === 1 ? 'Read the company profiles carefully.' : 'No news this round.'}</div>`;
+  return `<div class="papers">${b.news.map((n) => `<article class="paper"><div class="mast">THE EDC CHRONICLES</div><h3>${esc(n.headline)}</h3><p>${esc(n.body)}</p></article>`).join('')}</div>`;
+}
+
+function render() {
+  const b = board;
+  $label.textContent = b.label;
+  $sub.textContent = b.phase === 'final' ? '' : `Round ${b.round} of ${b.rounds}`;
+  const main = $main;
+  main.className = 'd-main';
+  if (b.teams.length > 12) main.classList.add('wide-lb'); // two-column board needs the room for longer team names
+  const lb = `<div class="d-col"><h2 class="d-title">Leaderboard${b.revealedThrough ? ` after Quarter ${b.revealedThrough}` : ''}</h2>${leaderboard(b)}</div>`;
+
+  if (b.phase === 'final') {
+    main.classList.add('single', 'big-final');
+    main.innerHTML = `<div class="d-col"><h2 class="d-title">Final standings</h2>${leaderboard(b)}</div>`;
+  } else if (b.phase === 'revealed') {
+    const tiles = b.companies.map((c) => {
+      const g = Number(c.growth[b.round - 1]);
+      return `<div class="co tile ${g < 0 ? 'neg' : 'pos'}"><div class="n">${esc(c.name)}</div><div class="g num ${g < 0 ? 'down' : 'up'}">${g < 0 ? '▼' : '▲'} ${pctText(g).replace(/^[+−]/, '')}</div></div>`;
+    });
+    main.innerHTML = `<div class="d-col"><h2 class="d-title">Quarter ${b.round} growth</h2><div class="cos">${tiles.join('')}</div></div>${lb}`;
+  } else if (b.round === 1 && !b.news.length) {
+    main.classList.add('single');
+    main.innerHTML = `<div class="d-col"><h2 class="d-title">Companies</h2><div class="cos">${b.companies.map((c) => `<div class="co"><div class="n">${esc(c.name)}</div></div>`).join('')}</div></div>`;
+  } else {
+    main.innerHTML = `<div class="d-col"><h2 class="d-title">${b.round === 1 ? 'Company information' : 'News'}</h2>${newsHtml(b)}</div>${lb}`;
+  }
+}
+
+function tick() {
+  if (!board) return;
+  const left = clock.left(board.phaseEndsAt);
+  $timer.textContent = mmss(left);
+  $timer.classList.toggle('low', left !== null && left <= 30 && left > 0);
+}
+
+async function poll() {
+  try {
+    const b = await (await fetch('/api/board', { cache: 'no-store' })).json();
+    clock.sync(b.serverNow);
+    const { serverNow, ...rest } = b;
+    const key = JSON.stringify(rest);
+    board = b;
+    if (key !== lastKey) {
+      lastKey = key;
+      render();
+    }
+    tick();
+  } catch {
+    /* keep showing the last good screen if the network blips */
+  }
+}
+const $label = document.getElementById('label');
+const $sub = document.getElementById('sub');
+const $timer = document.getElementById('timer');
+const $main = document.getElementById('main');
+poll();
+setInterval(poll, 2500);
+setInterval(tick, 1000);
+</script>
+</body>
+</html>

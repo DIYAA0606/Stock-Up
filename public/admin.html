@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guess the Growth – Admin</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="root"></div>
+<script type="module">
+import { $, esc, fmt, pctText, api, getPin, toast, gate, makeClock, mmss } from '/common.js';
+
+const root = document.getElementById('root');
+await gate(root, { title: 'Admin', allow: ['admin'] });
+const clock = makeClock();
+
+let S = null; // admin state
+let tab = 'control';
+let newsRound = 1;
+const TABS = [['control', 'Run the event'], ['teams', 'Teams'], ['news', 'News'], ['data', 'Growth data'], ['standings', 'Standings'], ['safety', 'Settings and safety']];
+
+async function refresh() {
+  S = await api('/api/admin/state');
+  clock.sync(S.serverNow);
+}
+async function act(path, body, okMsg) {
+  try {
+    await api('/api/admin/' + path, { method: 'POST', body });
+    if (okMsg) toast(okMsg, 'ok');
+    await refresh();
+    draw();
+    return true;
+  } catch (e) {
+    toast(e.message, 'err');
+    return false;
+  }
+}
+
+function shell() {
+  root.innerHTML = `<div class="shell">
+    <div class="bar"><div><span class="brand">Guess the <b>Growth</b></span> <span class="muted">admin</span></div>
+    <div class="links inline"><a href="/display.html" target="_blank" rel="noopener">Projector</a><a href="/entry.html" target="_blank" rel="noopener">Chit entry</a></div></div>
+    <div class="tabs" role="tablist">${TABS.map(([k, l]) => `<button class="tab" role="tab" data-t="${k}">${l}</button>`).join('')}</div>
+    <div id="body"></div></div>`;
+  for (const b of root.querySelectorAll('.tab')) b.addEventListener('click', () => { tab = b.dataset.t; draw(); });
+}
+
+function draw() {
+  for (const b of root.querySelectorAll('.tab')) b.classList.toggle('on', b.dataset.t === tab);
+  const el = $('#body');
+  ({ control, teams, news, data, standings, safety })[tab](el);
+}
+
+// ---------------- control ----------------
+function control(el) {
+  const last = S.step >= S.totalSteps - 1;
+  const inEntry = S.phase === 'investing' || S.phase === 'entry';
+  el.innerHTML = `<div class="cols">
+    <div class="panel stack">
+      <div class="muted">Now showing on the projector</div>
+      <div class="step-now">${esc(S.label)}</div>
+      <div class="muted">${S.phase === 'final' ? 'Final' : `Round ${S.round} of ${S.rounds}`} · step ${S.step + 1} of ${S.totalSteps} · <b class="num" id="clk"></b></div>
+      <div class="inline">
+        <button class="btn ghost" id="back" ${S.step === 0 ? 'disabled' : ''}>Back one step</button>
+        <button class="btn" id="adv" ${last ? 'disabled' : ''}>${last ? 'At the end' : `Next: ${esc(S.nextLabel)}`}</button>
+      </div>
+      ${S.phase === 'revealed' || S.phase === 'final' ? '' : '<div class="muted">Going back from a results screen hides the growth figures again.</div>'}
+      ${S.phase === 'final' ? `<div class="inline"><button class="btn" id="fnext">Reveal next team</button><button class="btn dark" id="fall">Reveal all</button><button class="btn ghost" id="freset">Hide all</button></div>` : ''}
+    </div>
+    <div class="panel stack">
+      <div><b>Chits for round ${S.round}</b></div>
+      ${inEntry
+        ? (S.missing.length ? `<div class="note warn">${S.missing.length} still missing:</div><div>${S.missing.map((n) => `<span class="pill">${esc(n)}</span>`).join('')}</div>` : '<div class="note" style="background:#123a17;color:#9be59b">All teams have a chit.</div>')
+        : '<div class="muted">Shown during the investment window and capital update.</div>'}
+      <hr style="border:0;border-top:1px solid var(--line);width:100%">
+      <div class="muted">Coordinator PIN <b class="num" style="color:var(--text)">${esc(S.pins.coordinator)}</b> · Admin PIN <b class="num" style="color:var(--text)">${esc(S.pins.admin)}</b></div>
+      <div class="muted">${S.teams.length} teams · ${S.companies.length} companies</div>
+    </div></div>`;
+  $('#back').addEventListener('click', () => act('back', {}));
+  $('#adv').addEventListener('click', async () => {
+    try {
+      await api('/api/admin/advance', { method: 'POST', body: {} });
+    } catch (e) {
+      if (e.status === 409 && e.data.missing) {
+        if (!confirm(`${e.message}\n\nReveal anyway?`)) return;
+        await api('/api/admin/advance', { method: 'POST', body: { force: true } });
+      } else return toast(e.message, 'err');
+    }
+    await refresh();
+    draw();
+  });
+  $('#fnext')?.addEventListener('click', () => act('final', { action: 'next' }));
+  $('#fall')?.addEventListener('click', () => act('final', { action: 'all' }));
+  $('#freset')?.addEventListener('click', () => act('final', { action: 'reset' }));
+}
+
+// ---------------- teams ----------------
+function teams(el) {
+  el.innerHTML = `<div class="cols"><div class="panel stack"><b>Add teams</b>
+    <label for="tn">One team name per line</label><textarea id="tn" placeholder="Team 1&#10;Team 2"></textarea>
+    <button class="btn" id="addT">Add teams</button></div>
+    <div class="panel stack"><b>${S.teams.length} teams</b><div>${S.teams.map((t) => `<div class="inline" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line)"><span>${esc(t.name)}</span><button class="btn small warn" data-rm="${t.id}">Remove</button></div>`).join('') || '<span class="muted">No teams yet.</span>'}</div></div></div>`;
+  $('#addT').addEventListener('click', async () => { if (await act('teams', { names: $('#tn').value.split('\n') }, 'Teams added')) teams($('#body')); });
+  for (const b of el.querySelectorAll('[data-rm]')) b.addEventListener('click', () => {
+    const t = S.teams.find((x) => x.id === b.dataset.rm);
+    if (confirm(`Remove ${t.name} and all their chits?`)) act('team.remove', { id: t.id }, 'Team removed');
+  });
+}
+
+// ---------------- news ----------------
+function news(el) {
+  const items = S.newsByRound[newsRound] || [];
+  const rows = [0, 1, 2].map((i) => `<div class="stack" style="padding:10px 0;border-bottom:1px solid var(--line)"><div><label for="h${i}">Headline ${i + 1}</label><input id="h${i}" type="text" value="${esc(items[i]?.headline || '')}"></div><div><label for="b${i}">Story</label><textarea id="b${i}" style="min-height:70px;font-family:inherit;font-size:15px">${esc(items[i]?.body || '')}</textarea></div></div>`).join('');
+  el.innerHTML = `<div class="panel stack" style="max-width:760px"><div class="inline"><label for="nr" style="margin:0">Round</label><select id="nr" style="width:auto">${Array.from({ length: S.rounds }, (_, i) => `<option value="${i + 1}" ${i + 1 === newsRound ? 'selected' : ''}>${i + 1}</option>`).join('')}</select></div>
+    ${rows}<button class="btn" id="saveN">Save news for round ${newsRound}</button><div class="muted">News is shown on the projector during the News Burst and stays up through the investment window.</div></div>`;
+  $('#nr').addEventListener('change', (e) => { newsRound = Number(e.target.value); news($('#body')); });
+  $('#saveN').addEventListener('click', () => act('news', { round: newsRound, items: [0, 1, 2].map((i) => ({ headline: $('#h' + i).value, body: $('#b' + i).value })) }, 'News saved'));
+}
+
+// ---------------- growth data ----------------
+function data(el) {
+  const tsv = ['Company', ...Array.from({ length: S.rounds }, (_, i) => 'Q' + (i + 1))].join('\t') + '\n' + S.companies.map((c) => [c.name, ...c.growth].join('\t')).join('\n');
+  el.innerHTML = `<div class="stack"><div class="panel stack"><b>Growth per company per quarter</b>
+    <div class="muted">Paste from your sheet (tab or comma separated). A plain number is a fraction: 0.18 means +18%. A cell with a % sign is a percentage: −6.00% means −6%. Values below −100% are treated as −100%.</div>
+    <textarea id="csv" style="min-height:220px" spellcheck="false">${esc(tsv)}</textarea>
+    <div class="inline"><button class="btn" id="saveD">Save growth data</button><span class="muted" id="dmsg"></span></div>
+    <div class="muted">A company that already has money invested in it cannot be removed.</div></div>
+    <div class="panel" style="overflow:auto"><table class="t num"><tr><th>Company</th>${Array.from({ length: S.rounds }, (_, i) => `<th>Q${i + 1}</th>`).join('')}</tr>
+    ${S.companies.map((c) => `<tr><td>${esc(c.name)}</td>${c.growth.map((g) => `<td class="${Number(g) < 0 ? 'down' : 'up'}">${pctText(g)}</td>`).join('')}</tr>`).join('')}</table></div></div>`;
+  $('#saveD').addEventListener('click', async () => {
+    const ok = await act('returns', { csv: $('#csv').value }, 'Growth data saved');
+    if (ok) data($('#body'));
+  });
+}
+
+// ---------------- standings ----------------
+function standings(el) {
+  const R = S.revealedThrough;
+  el.innerHTML = `<div class="panel stack" style="overflow:auto"><div class="inline" style="justify-content:space-between"><b>${R ? `Standings after Quarter ${R}` : 'No results revealed yet'}</b><button class="btn dark small" id="csvBtn">Download CSV</button></div>
+    <table class="t num"><tr><th>Team</th><th>Rank</th><th>Worth (Cr)</th>${Array.from({ length: S.rounds }, (_, i) => `<th>R${i + 1} chit</th>`).join('')}</tr>
+    ${S.teams.map((t) => `<tr><td>${esc(t.name)}</td><td>${t.rank}</td><td><b>${fmt(t.worth)}</b></td>${t.rounds.map((r) => `<td title="${r.entered ? `start ${fmt(r.capitalStart)} · invested ${fmt(r.invested)} · cash ${fmt(r.cash)} · exit ${fmt(r.exitTotal)} · end ${fmt(r.capitalEnd)}` : 'no chit'}">${r.entered ? `${fmt(r.invested)}${r.capitalEnd !== null ? ` → ${fmt(r.capitalEnd)}` : ''}` : '<span class="muted">–</span>'}</td>`).join('')}</tr>`).join('')}</table>
+    <div class="muted">Each round cell shows the amount invested and, once revealed, the team's capital at the end of that round. Hover for the full breakdown.</div></div>`;
+  $('#csvBtn').addEventListener('click', async () => {
+    const res = await fetch('/api/admin/export.csv', { headers: { 'x-pin': getPin() } });
+    const url = URL.createObjectURL(await res.blob());
+    const a = Object.assign(document.createElement('a'), { href: url, download: 'guess-the-growth-results.csv' });
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+}
+
+// ---------------- settings and safety ----------------
+async function safety(el) {
+  const d = S.settings.durations;
+  let audit = [];
+  try { audit = (await api('/api/admin/audit')).lines.slice(0, 25); } catch {}
+  el.innerHTML = `<div class="cols">
+    <div class="panel stack"><b>Settings</b>
+      <div><label for="sc">Starting capital (Cr)</label><input id="sc" type="text" value="${esc(S.settings.startingCapital)}"></div>
+      <div class="inline">${[['info', 'Information (min)'], ['news', 'News (min)'], ['investing', 'Investing (min)'], ['entry', 'Capital update (min)']].map(([k, l]) => `<div style="flex:1;min-width:110px"><label for="d_${k}">${l}</label><input id="d_${k}" type="number" min="0" value="${d[k]}"></div>`).join('')}</div>
+      <button class="btn" id="saveS">Save settings</button></div>
+    <div class="panel stack"><b>Backups</b><div class="muted">A backup is saved automatically each time results are revealed and before any reset. State lives in <code>data/state.json</code>.</div>
+      <button class="btn dark" id="bk">Save a backup now</button>
+      <hr style="border:0;border-top:1px solid var(--line);width:100%">
+      <b>Reset after a dry run</b><div class="muted">Deletes every chit and goes back to the start. Growth data and news stay.</div>
+      <label class="inline" style="color:var(--text)"><input type="checkbox" id="ct" style="width:auto"> Also delete all teams</label>
+      <div class="inline"><input id="rc" type="text" placeholder="Type RESET" style="max-width:150px"><button class="btn warn" id="rs">Reset event</button></div></div>
+    <div class="panel stack" style="grid-column:1/-1"><b>Recent changes</b>
+      <table class="t"><tr><th>Time</th><th>Who</th><th>What</th></tr>${audit.map((l) => `<tr><td>${esc(new Date(l.at).toLocaleTimeString())}</td><td>${esc(l.who)}</td><td style="text-align:left">${esc(l.action)}${l.teamId ? ' · ' + esc((S.teams.find((t) => t.id === l.teamId) || {}).name || l.teamId) : ''}${l.round ? ' · round ' + esc(l.round) : ''}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">Nothing yet.</td></tr>'}</table></div></div>`;
+  $('#saveS').addEventListener('click', () => act('settings', { startingCapital: $('#sc').value, durations: Object.fromEntries(['info', 'news', 'investing', 'entry'].map((k) => [k, $('#d_' + k).value])) }, 'Settings saved'));
+  $('#bk').addEventListener('click', () => act('backup', {}, 'Backup saved'));
+  $('#rs').addEventListener('click', async () => {
+    if (await act('reset', { confirm: $('#rc').value.trim(), clearTeams: $('#ct').checked }, 'Event reset')) tab = 'control', draw();
+  });
+}
+
+shell();
+await refresh();
+draw();
+setInterval(async () => {
+  try {
+    await refresh();
+    if (tab === 'control') {
+      const a = document.activeElement;
+      if (!a || a.tagName === 'BODY' || a.tagName === 'BUTTON') control($('#body'));
+    } else if (tab === 'standings') standings($('#body'));
+    const c = document.getElementById('clk');
+    if (c) c.textContent = mmss(clock.left(S.phaseEndsAt));
+  } catch {}
+}, 3000);
+setInterval(() => {
+  const c = document.getElementById('clk');
+  if (c && S) c.textContent = mmss(clock.left(S.phaseEndsAt));
+}, 1000);
+</script>
+</body>
+</html>
