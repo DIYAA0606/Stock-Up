@@ -1,6 +1,7 @@
 {
   "version": 2,
   "framework": null,
+  "regions": ["bom1"],
   "rewrites": [
     {
       "source": "/api/:match*",
