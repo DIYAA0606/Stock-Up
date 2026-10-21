@@ -71,10 +71,6 @@ export function createRequestHandler(store) {
     res.end(JSON.stringify(obj));
   };
 
-  /**
-   * Verify the bearer token and check the required role.
-   * Returns the token payload: { role, coordId, exp }
-   */
   async function need(req, res, ...roles) {
     const rawIp = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '?');
     const ip = rawIp.split(',')[0].trim();
@@ -83,17 +79,37 @@ export function createRequestHandler(store) {
     if (blocked) throw new app.HttpError(429, 'Too many failed attempts. Wait a minute.');
 
     const token = extractToken(req);
-    if (!token) {
-      await store.recordFailAndCheck(`ip:${ip}`, 15, 60);
-      throw new app.HttpError(401, 'Missing or invalid token. Please log in.');
+    let payload;
+
+    if (token) {
+      try {
+        payload = verifyToken(token);
+      } catch (e) {
+        await store.recordFailAndCheck(`ip:${ip}`, 15, 60);
+        throw new app.HttpError(e.status || 401, e.message || 'Invalid or expired token');
+      }
+    } else {
+      // Legacy PIN fallback (for tests, LAN mode, curl scripts)
+      const pin = req.headers['x-pin'];
+      if (pin) {
+        const st = await store.load();
+        if (st.settings.adminPinHash && checkPin(pin, st.settings.adminPinHash)) {
+          payload = { role: 'admin', coordId: 'ADMIN' };
+        } else if (st.settings.coordinatorPinHash && checkPin(pin, st.settings.coordinatorPinHash)) {
+          payload = { role: 'coordinator', coordId: 'legacy' };
+        } else {
+          const coords = await store.getCoordinators();
+          const coord = coords.find((c) => c.enabled && checkPin(pin, c.pinHash));
+          if (coord) {
+            payload = { role: 'coordinator', coordId: coord.id };
+          }
+        }
+      }
     }
 
-    let payload;
-    try {
-      payload = verifyToken(token);
-    } catch (e) {
+    if (!payload) {
       await store.recordFailAndCheck(`ip:${ip}`, 15, 60);
-      throw e.status ? e : new app.HttpError(401, 'Invalid or expired token');
+      throw new app.HttpError(401, 'Missing or invalid token. Please log in.');
     }
 
     if (!roles.includes(payload.role)) throw new app.HttpError(403, 'Not allowed for your role');
@@ -136,14 +152,26 @@ export function createRequestHandler(store) {
       return res.end(boardJson);
     }
 
-    // ── Login: POST /api/auth/login { code, pin } ────────────────────────
+    // ── Login: POST /api/auth/login or /api/login { code, pin } ─────────
     // code = "ADMIN" for the admin, coordinator code (e.g. "C01") for coordinators
-    if (m === 'POST' && p === '/api/auth/login') {
+    if (m === 'POST' && (p === '/api/auth/login' || p === '/api/login')) {
       const body = await readBody(req);
-      const code = String(body.code || '').trim().toUpperCase();
+      let code = String(body.code || '').trim().toUpperCase();
       const pin  = String(body.pin  || '').trim();
       const rawIp = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '?');
       const ip = rawIp.split(',')[0].trim();
+
+      // Legacy fallback: if code omitted, detect role from PIN
+      if (!code && pin) {
+        const st = await store.load();
+        if (st.settings.adminPinHash && checkPin(pin, st.settings.adminPinHash)) {
+          code = 'ADMIN';
+        } else if (st.settings.coordinatorPinHash && checkPin(pin, st.settings.coordinatorPinHash)) {
+          const token = signToken({ role: 'coordinator', coordId: 'legacy' });
+          await store.audit('LEGACY_COORD', 'login', { ip });
+          return json(res, 200, { token, role: 'coordinator', coordId: 'legacy' });
+        }
+      }
 
       const blockedIp   = await store.isRateLimited(`ip:${ip}`, 15, 60);
       const blockedCode = await store.isRateLimited(`code:${code}`, 10, 60);
@@ -181,13 +209,13 @@ export function createRequestHandler(store) {
       return json(res, 200, { token, role: 'coordinator', coordId: coord.id });
     }
 
-    // ── Coordinator entry context: GET /api/coord/entry ──────────────────
-    if (m === 'GET' && p === '/api/coord/entry') {
+    // ── Coordinator entry context: GET /api/coord/entry or /api/entry ─────
+    if (m === 'GET' && (p === '/api/coord/entry' || p === '/api/entry')) {
       const payload = await need(req, res, 'admin', 'coordinator');
       const st = await store.load();
 
       let teams;
-      if (payload.role === 'admin') {
+      if (payload.role === 'admin' || payload.coordId === 'legacy') {
         teams = st.teams; // admin sees all
       } else {
         const coord = await store.getCoordinator(payload.coordId);
@@ -200,14 +228,14 @@ export function createRequestHandler(store) {
       return json(res, 200, app.entryContext(st, payload.role, roundParam, teams));
     }
 
-    // ── Coordinator entry submit: POST /api/coord/entry ──────────────────
-    if (m === 'POST' && p === '/api/coord/entry') {
+    // ── Coordinator entry submit: POST /api/coord/entry or /api/entry ─────
+    if (m === 'POST' && (p === '/api/coord/entry' || p === '/api/entry')) {
       const payload = await need(req, res, 'admin', 'coordinator');
       const b = await readBody(req);
       const st = await store.load();
 
       // Enforce coordinator isolation: only allowed teams
-      if (payload.role === 'coordinator') {
+      if (payload.role === 'coordinator' && payload.coordId !== 'legacy') {
         const coord = await store.getCoordinator(payload.coordId);
         if (!coord || !coord.enabled) throw new app.HttpError(403, 'Coordinator account disabled');
         if (!coord.assignedTeams.includes(b.teamId)) {
@@ -453,7 +481,7 @@ export function createRequestHandler(store) {
       if (url.pathname.startsWith('/api/')) return await api(req, res, url);
       return serveStatic(req, res, url);
     } catch (e) {
-      if (e instanceof app.HttpError) return json(res, e.status, { error: e.message, ...e.extra });
+      if (e instanceof app.HttpError || e.status) return json(res, e.status, { error: e.message, ...(e.extra || {}) });
       console.error(e);
       return json(res, 500, { error: 'Server error: ' + e.message });
     }

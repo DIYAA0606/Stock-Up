@@ -30,7 +30,8 @@ const HEADER = b64url(Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'GTG' })))
 
 /** Sign a payload object. Expiry defaults to 12 hours from now. */
 export function signToken(payload, { expiresInSec = 12 * 3600 } = {}) {
-  const p = { ...payload, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + expiresInSec };
+  const exp = payload.exp !== undefined ? payload.exp : (Math.floor(Date.now() / 1000) + expiresInSec);
+  const p = { iat: Math.floor(Date.now() / 1000), ...payload, exp };
   const body = HEADER + '.' + b64url(Buffer.from(JSON.stringify(p)));
   const sig = b64url(crypto.createHmac('sha256', secret()).update(body).digest());
   return body + '.' + sig;

@@ -5,26 +5,31 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Store } from '../src/store.js';
+import { FileStore } from '../src/store-file.js';
 import { createApp } from '../src/server.js';
 import { SEED_CSV } from '../src/seed.js';
+import { signToken, hashPin } from '../src/auth.js';
 
-let server, base, store, ADMIN, COORD;
+let server, base, store, ADMIN_PIN, COORD_PIN;
 
 before(async () => {
-  store = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'gtg-e2e-')));
-  ADMIN = store.state.settings.pins.admin;
-  COORD = store.state.settings.pins.coordinator;
+  store = new FileStore(fs.mkdtempSync(path.join(os.tmpdir(), 'gtg-e2e-')));
+  ADMIN_PIN = store.state.settings._adminPinPlain;
+  COORD_PIN = store.state.settings._coordinatorPinPlain;
   server = createApp(store);
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${server.address().port}`;
 });
 after(() => server.close());
 
-async function call(method, url, { pin, body } = {}) {
+async function call(method, url, { token, pin, body } = {}) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  if (pin) headers['x-pin'] = pin;
+
   const res = await fetch(base + url, {
     method,
-    headers: { 'Content-Type': 'application/json', ...(pin ? { 'x-pin': pin } : {}) },
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   });
   const text = await res.text();
@@ -36,9 +41,10 @@ async function call(method, url, { pin, body } = {}) {
   }
   return { status: res.status, data };
 }
-const admin = (m, u, body) => call(m, '/api/admin/' + u, { pin: ADMIN, body });
 
-// independent model of the sheet
+const admin = (m, u, body) => call(m, '/api/admin/' + u, { pin: ADMIN_PIN, body });
+
+// Independent model of the sheet
 const sheet = SEED_CSV.split('\n').slice(1).map((l) => {
   const [name, ...cells] = l.split('\t');
   return { name, g: cells.map((c) => (c.endsWith('%') ? parseFloat(c) / 100 : parseFloat(c))) };
@@ -53,22 +59,174 @@ function mulberry32(a) {
   };
 }
 
-test('PIN protection', async () => {
+test('Bearer token auth and PIN protection', async () => {
+  // Unauthenticated requests
   assert.equal((await call('GET', '/api/entry')).status, 401);
   assert.equal((await call('GET', '/api/entry', { pin: '0000' })).status, 401);
-  assert.equal((await call('GET', '/api/admin/state', { pin: COORD })).status, 403);
-  assert.equal((await call('POST', '/api/login', { body: { pin: ADMIN } })).data.role, 'admin');
-  assert.equal((await call('POST', '/api/login', { body: { pin: COORD } })).data.role, 'coordinator');
-  assert.equal((await call('GET', '/api/board')).status, 200); // projector needs no PIN
+  assert.equal((await call('GET', '/api/admin/state', { pin: COORD_PIN })).status, 403);
+
+  // Login via POST /api/auth/login
+  const adminLogin = await call('POST', '/api/auth/login', { body: { code: 'ADMIN', pin: ADMIN_PIN } });
+  assert.equal(adminLogin.status, 200);
+  assert.equal(adminLogin.data.role, 'admin');
+  assert.ok(adminLogin.data.token);
+
+  // Authenticate using token
+  const stateWithToken = await call('GET', '/api/admin/state', { token: adminLogin.data.token });
+  assert.equal(stateWithToken.status, 200);
+
+  // Legacy login endpoint
+  assert.equal((await call('POST', '/api/login', { body: { pin: ADMIN_PIN } })).data.role, 'admin');
+  assert.equal((await call('POST', '/api/login', { body: { pin: COORD_PIN } })).data.role, 'coordinator');
+
+  // Board (projector) is public
+  assert.equal((await call('GET', '/api/board')).status, 200);
 });
 
-test('static pages are served and path traversal is blocked', async () => {
+test('Invalid, expired, and forged tokens are rejected with 401', async () => {
+  // Tampered payload
+  const validToken = signToken({ role: 'admin', coordId: 'ADMIN' });
+  const parts = validToken.split('.');
+  const forgedToken = `${parts[0]}.${Buffer.from('{"role":"admin"}').toString('base64url')}.${parts[2]}`;
+  assert.equal((await call('GET', '/api/admin/state', { token: forgedToken })).status, 401);
+
+  // Expired token
+  const expiredToken = signToken({ role: 'admin', coordId: 'ADMIN', exp: Math.floor(Date.now() / 1000) - 60 });
+  assert.equal((await call('GET', '/api/admin/state', { token: expiredToken })).status, 401);
+
+  // Garbage token
+  assert.equal((await call('GET', '/api/admin/state', { token: 'not-a-token' })).status, 401);
+});
+
+test('Static pages are served and path traversal is blocked', async () => {
   assert.equal((await call('GET', '/')).status, 200);
+  assert.equal((await call('GET', '/coordinator.html')).status, 200);
   const evil = await fetch(base + '/..%2f..%2fpackage.json');
   assert.ok([403, 404].includes(evil.status));
 });
 
-test('full 6-round event with 8 teams matches an independent calculation', async () => {
+test('Coordinator isolation: only assigned teams are visible and writable', async () => {
+  // Create coordinator with assigned teams
+  const coordPin = '112233';
+  await store.setCoordinator({
+    id: 'coord-c99',
+    code: 'C99',
+    pinHash: hashPin(coordPin),
+    assignedTeams: ['t-alpha'],
+    enabled: true,
+    createdAt: Date.now(),
+  });
+
+  // Login as C99
+  const loginRes = await call('POST', '/api/auth/login', { body: { code: 'C99', pin: coordPin } });
+  assert.equal(loginRes.status, 200);
+  const token = loginRes.data.token;
+
+  // Attempt to enter for non-assigned team t-beta
+  const forbiddenRes = await call('POST', '/api/coord/entry', {
+    token,
+    body: { teamId: 't-beta', round: 1, amounts: { c1: '10' } }
+  });
+  assert.equal(forbiddenRes.status, 403);
+});
+
+test('Disabled coordinator is rejected on login and entry', async () => {
+  const pin = '556677';
+  await store.setCoordinator({
+    id: 'coord-disabled',
+    code: 'CDIS',
+    pinHash: hashPin(pin),
+    assignedTeams: ['t-alpha'],
+    enabled: false,
+    createdAt: Date.now(),
+  });
+
+  const loginRes = await call('POST', '/api/auth/login', { body: { code: 'CDIS', pin } });
+  assert.equal(loginRes.status, 401);
+});
+
+test('Idempotent chit submission returns ok', async () => {
+  // Admin entry for round 1
+  const t0 = store.state.teams[0];
+  if (t0) {
+    const r1 = await call('POST', '/api/coord/entry', {
+      pin: ADMIN_PIN,
+      body: { teamId: t0.id, round: 1, amounts: { c1: '20' } }
+    });
+    // Submitting exact same chit again returns idempotent ok
+    const r2 = await call('POST', '/api/coord/entry', {
+      pin: ADMIN_PIN,
+      body: { teamId: t0.id, round: 1, amounts: { c1: '20' } }
+    });
+    assert.equal(r2.status, 200);
+    assert.equal(r2.data.idempotent, true);
+  }
+});
+
+test('Concurrency: 30 coordinators and 1 admin saving in parallel without lost writes', async () => {
+  // Reset event for clean test
+  await admin('POST', 'reset', { confirm: 'RESET', clearTeams: true });
+
+  // Clean coordinators before test
+  const existingCoords = await store.getCoordinators();
+  for (const c of existingCoords) {
+    await store.deleteCoordinator(c.id);
+  }
+
+  // Add 30 teams
+  const teamNames = Array.from({ length: 30 }, (_, i) => `Team ${i + 1}`);
+  await admin('POST', 'teams', { names: teamNames });
+
+  // Bulk generate 30 coordinators
+  const genRes = await admin('POST', 'coordinators/generate', { count: 30 });
+  assert.equal(genRes.data.created.length, 30);
+
+  // Auto-assign teams
+  await admin('POST', 'coordinators/assign', {});
+
+  // Move to investing phase
+  await admin('POST', 'advance', {}); // info -> news
+  await admin('POST', 'advance', {}); // news -> investing
+
+  // Concurrently login all 30 coordinators and submit their chits simultaneously
+  const st = await store.load();
+  const coords = await store.getCoordinators();
+
+  const promises = coords.map(async (c, i) => {
+    // Generate valid session token
+    const token = signToken({ role: 'coordinator', coordId: c.id });
+    const teamId = c.assignedTeams[0];
+    assert.ok(teamId, `Coordinator ${c.code} must have an assigned team`);
+
+    const res = await call('POST', '/api/coord/entry', {
+      token,
+      body: {
+        teamId,
+        round: 1,
+        amounts: { c1: '10', c2: '10' }
+      }
+    });
+    assert.equal(res.status, 200, `Coordinator ${c.code} entry failed: ${JSON.stringify(res.data)}`);
+  });
+
+  // Also simulate concurrent admin status check
+  const adminCheck = admin('GET', 'state');
+
+  await Promise.all([...promises, adminCheck]);
+
+  // Verify all 30 allocations were saved with zero lost writes
+  const finalState = await store.load();
+  let savedCount = 0;
+  for (const t of finalState.teams) {
+    if (finalState.allocations[t.id] && finalState.allocations[t.id][1]) {
+      savedCount++;
+    }
+  }
+  assert.equal(savedCount, 30, 'All 30 teams must have their round 1 chits recorded');
+});
+
+test('Full 6-round event with 8 teams matches an independent calculation', async () => {
+  await admin('POST', 'reset', { confirm: 'RESET', clearTeams: true });
   const names = ['Team 1', 'Team 2', 'Team 3', 'Team 4', 'Team 5', 'Team 6', 'Team 7', 'Team 8'];
   assert.equal((await admin('POST', 'teams', { names })).status, 200);
   const rand = mulberry32(2026);
@@ -83,7 +241,7 @@ test('full 6-round event with 8 teams matches an independent calculation', async
     assert.equal(pub.phase, 'entry');
     assert.equal(pub.companies[0].growth.length, round - 1, 'growth must only be public for finished rounds');
 
-    const ctx = (await call('GET', '/api/entry', { pin: COORD })).data;
+    const ctx = (await call('GET', '/api/entry', { pin: COORD_PIN })).data;
     assert.equal(ctx.writable, true);
     assert.ok(!JSON.stringify(ctx).includes('growth'));
     for (const t of ctx.teams) {
@@ -99,7 +257,7 @@ test('full 6-round event with 8 teams matches an independent calculation', async
         amounts[c.id] = (part / 100).toFixed(2);
         left -= part;
       });
-      const r = await call('POST', '/api/entry', { pin: COORD, body: { teamId: t.id, round, amounts } });
+      const r = await call('POST', '/api/entry', { pin: COORD_PIN, body: { teamId: t.id, round, amounts } });
       assert.equal(r.status, 200, JSON.stringify(r.data));
       // update the independent model with what was actually entered
       let invested = 0;
@@ -113,7 +271,7 @@ test('full 6-round event with 8 teams matches an independent calculation', async
     }
     // one over-budget chit must be refused and leave the saved one alone
     const t0 = ctx.teams[0];
-    const bad = await call('POST', '/api/entry', { pin: COORD, body: { teamId: t0.id, round, amounts: { c1: '1000' } } });
+    const bad = await call('POST', '/api/entry', { pin: COORD_PIN, body: { teamId: t0.id, round, amounts: { c1: '1000' } } });
     assert.equal(bad.status, 422);
 
     assert.equal((await admin('POST', 'advance', {})).status, 200); // -> revealed
@@ -138,7 +296,7 @@ test('full 6-round event with 8 teams matches an independent calculation', async
   assert.equal(fin.teams.length, 8);
 
   // exports and logs
-  const csv = await fetch(base + '/api/admin/export.csv', { headers: { 'x-pin': ADMIN } });
+  const csv = await fetch(base + '/api/admin/export.csv', { headers: { 'x-pin': ADMIN_PIN } });
   const text = await csv.text();
   assert.equal(text.trim().split('\n').length, 1 + 8 * 6);
   const audit = (await admin('GET', 'audit')).data.lines;

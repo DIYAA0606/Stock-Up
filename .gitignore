@@ -5,3 +5,6 @@ data/backups
 data-demo
 .vercel
 .env*
+state.json
+*.tmp
+*.log

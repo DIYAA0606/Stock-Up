@@ -36,3 +36,5 @@ export async function createStore(opts = {}) {
   const dir = opts.dir || path.join(__dirname, '..');
   return new FileStore(dir);
 }
+
+export { FileStore, FileStore as Store } from './store-file.js';
