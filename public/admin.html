@@ -9,7 +9,7 @@
 <body>
 <div id="root"></div>
 <script type="module">
-import { $, esc, fmt, pctText, api, getPin, toast, gate, makeClock, mmss } from '/common.js';
+import { $, esc, fmt, pctText, api, getToken, toast, gate, makeClock, mmss } from '/common.js';
 
 const root = document.getElementById('root');
 await gate(root, { title: 'Admin', allow: ['admin'] });
@@ -18,7 +18,15 @@ const clock = makeClock();
 let S = null; // admin state
 let tab = 'control';
 let newsRound = 1;
-const TABS = [['control', 'Run the event'], ['teams', 'Teams'], ['news', 'News'], ['data', 'Growth data'], ['standings', 'Standings'], ['safety', 'Settings and safety']];
+const TABS = [
+  ['control', 'Run the event'],
+  ['coordinators', 'Coordinators'],
+  ['teams', 'Teams'],
+  ['news', 'News'],
+  ['data', 'Growth data'],
+  ['standings', 'Standings'],
+  ['safety', 'Settings and safety']
+];
 
 async function refresh() {
   S = await api('/api/admin/state');
@@ -26,11 +34,11 @@ async function refresh() {
 }
 async function act(path, body, okMsg) {
   try {
-    await api('/api/admin/' + path, { method: 'POST', body });
+    const res = await api('/api/admin/' + path, { method: 'POST', body });
     if (okMsg) toast(okMsg, 'ok');
     await refresh();
     draw();
-    return true;
+    return res ?? true;
   } catch (e) {
     toast(e.message, 'err');
     return false;
@@ -39,17 +47,24 @@ async function act(path, body, okMsg) {
 
 function shell() {
   root.innerHTML = `<div class="shell">
-    <div class="bar"><div><span class="brand">Guess the <b>Growth</b></span> <span class="muted">admin</span></div>
-    <div class="links inline"><a href="/display.html" target="_blank" rel="noopener">Projector</a><a href="/entry.html" target="_blank" rel="noopener">Chit entry</a></div></div>
+    <div class="bar">
+      <div><span class="brand">Guess the <b>Growth</b></span> <span class="muted">admin</span></div>
+      <div class="links inline">
+        <a href="/display.html" target="_blank" rel="noopener">Projector</a>
+        <a href="/coordinator.html" target="_blank" rel="noopener">Coordinator portal</a>
+      </div>
+    </div>
     <div class="tabs" role="tablist">${TABS.map(([k, l]) => `<button class="tab" role="tab" data-t="${k}">${l}</button>`).join('')}</div>
-    <div id="body"></div></div>`;
+    <div id="body"></div>
+  </div>
+  <div id="modalBox"></div>`;
   for (const b of root.querySelectorAll('.tab')) b.addEventListener('click', () => { tab = b.dataset.t; draw(); });
 }
 
 function draw() {
   for (const b of root.querySelectorAll('.tab')) b.classList.toggle('on', b.dataset.t === tab);
   const el = $('#body');
-  ({ control, teams, news, data, standings, safety })[tab](el);
+  ({ control, coordinators, teams, news, data, standings, safety })[tab](el);
 }
 
 // ---------------- control ----------------
@@ -74,7 +89,7 @@ function control(el) {
         ? (S.missing.length ? `<div class="note warn">${S.missing.length} still missing:</div><div>${S.missing.map((n) => `<span class="pill">${esc(n)}</span>`).join('')}</div>` : '<div class="note" style="background:#123a17;color:#9be59b">All teams have a chit.</div>')
         : '<div class="muted">Shown during the investment window and capital update.</div>'}
       <hr style="border:0;border-top:1px solid var(--line);width:100%">
-      <div class="muted">Coordinator PIN <b class="num" style="color:var(--text)">${esc(S.pins.coordinator)}</b> · Admin PIN <b class="num" style="color:var(--text)">${esc(S.pins.admin)}</b></div>
+      ${S.pins ? `<div class="muted">Coordinator PIN <b class="num" style="color:var(--text)">${esc(S.pins.coordinator)}</b> · Admin PIN <b class="num" style="color:var(--text)">${esc(S.pins.admin)}</b></div>` : '<div class="muted">Coordinators have individual credentials in the <b>Coordinators</b> tab.</div>'}
       <div class="muted">${S.teams.length} teams · ${S.companies.length} companies</div>
     </div></div>`;
   $('#back').addEventListener('click', () => act('back', {}));
@@ -93,6 +108,247 @@ function control(el) {
   $('#fnext')?.addEventListener('click', () => act('final', { action: 'next' }));
   $('#fall')?.addEventListener('click', () => act('final', { action: 'all' }));
   $('#freset')?.addEventListener('click', () => act('final', { action: 'reset' }));
+}
+
+// ---------------- coordinators ----------------
+async function coordinators(el) {
+  let coords = [];
+  try {
+    const res = await api('/api/admin/coordinators');
+    coords = res.coordinators || [];
+  } catch (e) {
+    el.innerHTML = `<div class="note bad">${esc(e.message)}</div>`;
+    return;
+  }
+
+  const teamMap = new Map(S.teams.map((t) => [t.id, t.name]));
+
+  el.innerHTML = `<div class="stack">
+    <div class="panel stack">
+      <b>Coordinator management & team isolation</b>
+      <div class="muted">Each coordinator receives a code (e.g. C01) and a private 6-digit PIN. When logged in at <code>/coordinator.html</code>, they only see and enter chits for their assigned teams.</div>
+      <div class="inline" style="gap:12px">
+        <label class="inline" style="margin:0;color:var(--text)">Bulk generate:
+          <input id="coordCount" type="number" min="1" max="100" value="30" style="width:70px;margin-left:6px">
+        </label>
+        <button class="btn" id="genCoordsBtn">Generate coordinators</button>
+        <button class="btn dark" id="autoAssignBtn" ${coords.length && S.teams.length ? '' : 'disabled'}>Auto-assign teams evenly</button>
+        <button class="btn ghost" id="printSlipsBtn" ${coords.length ? '' : 'disabled'}>Print credential slips</button>
+      </div>
+    </div>
+
+    <div class="panel stack" style="overflow:auto">
+      <div class="inline" style="justify-content:space-between">
+        <b>${coords.length} Coordinators</b>
+        <span class="muted">${coords.filter(c => c.enabled).length} active</span>
+      </div>
+      ${coords.length === 0 ? '<div class="muted">No coordinators created yet. Use the bulk generate button above.</div>' : `
+      <table class="t">
+        <thead>
+          <tr>
+            <th style="text-align:left">Code</th>
+            <th>Status</th>
+            <th style="text-align:left">Assigned Teams (${S.teams.length} total)</th>
+            <th style="text-align:right">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${coords.map(c => `
+            <tr>
+              <td style="font-weight:700">${esc(c.code)}</td>
+              <td><span class="badge ${c.enabled ? 'open' : 'closed'}">${c.enabled ? 'Active' : 'Disabled'}</span></td>
+              <td style="text-align:left">
+                ${(c.assignedTeams && c.assignedTeams.length)
+                  ? c.assignedTeams.map(tid => `<span class="pill">${esc(teamMap.get(tid) || tid)}</span>`).join('')
+                  : '<span class="muted">No teams assigned</span>'}
+              </td>
+              <td style="text-align:right;white-space:nowrap">
+                <button class="btn small ghost" data-reset-pin="${esc(c.id)}" data-code="${esc(c.code)}">Reset PIN</button>
+                <button class="btn small dark" data-toggle="${esc(c.id)}">${c.enabled ? 'Disable' : 'Enable'}</button>
+                <button class="btn small ghost" data-edit-teams="${esc(c.id)}">Assign</button>
+                <button class="btn small warn" data-del="${esc(c.id)}" data-code="${esc(c.code)}">Delete</button>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+      `}
+    </div>
+  </div>`;
+
+  $('#genCoordsBtn').addEventListener('click', async () => {
+    const count = Number($('#coordCount').value) || 1;
+    try {
+      const res = await api('/api/admin/coordinators/generate', { method: 'POST', body: { count } });
+      toast(`Generated ${res.created.length} coordinators`, 'ok');
+      showSlipsModal('Newly Generated Coordinators', res.created, teamMap);
+      await refresh();
+      coordinators(el);
+    } catch (e) {
+      toast(e.message, 'err');
+    }
+  });
+
+  $('#autoAssignBtn')?.addEventListener('click', async () => {
+    if (await act('coordinators/assign', {}, 'Teams auto-distributed evenly across coordinators')) {
+      coordinators(el);
+    }
+  });
+
+  $('#printSlipsBtn')?.addEventListener('click', () => {
+    showPrintView(coords, teamMap);
+  });
+
+  for (const b of el.querySelectorAll('[data-reset-pin]')) {
+    b.addEventListener('click', async () => {
+      const id = b.dataset.resetPin;
+      const code = b.dataset.code;
+      if (!confirm(`Reset PIN for coordinator ${code}?`)) return;
+      try {
+        const res = await api('/api/admin/coordinators/reset-pin', { method: 'POST', body: { coordId: id } });
+        alert(`New PIN for coordinator ${code}:\n\nPIN: ${res.pin}\n\nPlease share this PIN with coordinator ${code}.`);
+        coordinators(el);
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    });
+  }
+
+  for (const b of el.querySelectorAll('[data-toggle]')) {
+    b.addEventListener('click', async () => {
+      const id = b.dataset.toggle;
+      try {
+        await api('/api/admin/coordinators/toggle', { method: 'POST', body: { coordId: id } });
+        toast('Coordinator status updated', 'ok');
+        coordinators(el);
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    });
+  }
+
+  for (const b of el.querySelectorAll('[data-del]')) {
+    b.addEventListener('click', async () => {
+      const id = b.dataset.del;
+      const code = b.dataset.code;
+      if (!confirm(`Delete coordinator ${code}?`)) return;
+      try {
+        await api('/api/admin/coordinators/delete', { method: 'POST', body: { coordId: id } });
+        toast(`Coordinator ${code} deleted`, 'ok');
+        coordinators(el);
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    });
+  }
+
+  for (const b of el.querySelectorAll('[data-edit-teams]')) {
+    b.addEventListener('click', () => {
+      const id = b.dataset.editTeams;
+      const coord = coords.find(c => c.id === id);
+      if (!coord) return;
+      showAssignModal(coord, S.teams, el);
+    });
+  }
+}
+
+function showSlipsModal(title, createdList, teamMap) {
+  const box = $('#modalBox');
+  box.innerHTML = `<div class="modal-bg"><div class="modal" role="dialog" aria-modal="true" style="max-width:640px;max-height:85vh;overflow:auto">
+    <h2>${esc(title)}</h2>
+    <div class="note warn">Make sure to save or distribute these PINs now. For security, PINs are hashed on the server and cannot be viewed again.</div>
+    <table class="t num" style="margin:16px 0">
+      <thead><tr><th style="text-align:left">Coordinator Code</th><th>PIN</th><th style="text-align:left">Login URL</th></tr></thead>
+      <tbody>
+        ${createdList.map(c => `<tr><td style="text-align:left"><b>${esc(c.code)}</b></td><td><code style="font-size:16px;color:var(--text)">${esc(c.pin)}</code></td><td style="text-align:left">/coordinator.html</td></tr>`).join('')}
+      </tbody>
+    </table>
+    <div class="inline" style="justify-content:flex-end">
+      <button class="btn" id="closeSlips">Done</button>
+    </div>
+  </div></div>`;
+  $('#closeSlips').addEventListener('click', () => { box.innerHTML = ''; });
+}
+
+function showPrintView(coords, teamMap) {
+  const w = window.open('', '_blank');
+  if (!w) return toast('Popup blocked, please allow popups in your browser', 'err');
+  const origin = window.location.origin;
+  w.document.write(`<!doctype html><html><head><title>Coordinator Credential Slips</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; padding: 24px; color: #111; background: #fff; }
+    h1 { font-size: 22px; margin-top: 0; }
+    .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+    .slip { border: 2px dashed #333; border-radius: 8px; padding: 16px; page-break-inside: avoid; }
+    .title { font-size: 16px; font-weight: 800; margin-bottom: 8px; color: #b91c1c; }
+    .row { margin: 6px 0; font-size: 14px; }
+    .row b { font-size: 16px; }
+    .teams { font-size: 12px; color: #444; margin-top: 10px; line-height: 1.4; }
+    @media print { .no-print { display: none; } }
+  </style></head><body>
+  <div class="no-print" style="margin-bottom:20px;display:flex;gap:12px;align-items:center">
+    <button onclick="window.print()" style="padding:10px 20px;font-size:16px;font-weight:700;cursor:pointer;background:#b91c1c;color:#fff;border:0;border-radius:6px">Print All Slips</button>
+    <span>Distribute one slip to each coordinator.</span>
+  </div>
+  <div class="grid">
+    ${coords.map(c => `
+      <div class="slip">
+        <div class="title">Guess the Growth · Coordinator Access</div>
+        <div class="row">Coordinator Code: <b>${esc(c.code)}</b></div>
+        <div class="row">Portal URL: <b>${origin}/coordinator.html</b></div>
+        <div class="row">Status: <b>${c.enabled ? 'Active' : 'Disabled'}</b></div>
+        <div class="teams">Assigned Teams: <b>${(c.assignedTeams || []).map(tid => esc(teamMap.get(tid) || tid)).join(', ') || 'None assigned yet'}</b></div>
+      </div>
+    `).join('')}
+  </div></body></html>`);
+  w.document.close();
+}
+
+function showAssignModal(coord, allTeams, parentEl) {
+  const box = $('#modalBox');
+  const assigned = new Set(coord.assignedTeams || []);
+  box.innerHTML = `<div class="modal-bg"><div class="modal" role="dialog" aria-modal="true" style="max-width:540px;max-height:85vh;overflow:auto">
+    <h2>Assign teams to ${esc(coord.code)}</h2>
+    <div class="inline" style="gap:8px;margin-bottom:12px">
+      <button class="btn small ghost" id="selAll">Select all</button>
+      <button class="btn small ghost" id="clearAll">Clear all</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:16px">
+      ${allTeams.map(t => `
+        <label class="inline" style="color:var(--text);font-size:14px;cursor:pointer">
+          <input type="checkbox" data-tid="${esc(t.id)}" ${assigned.has(t.id) ? 'checked' : ''} style="width:auto">
+          <span>${esc(t.name)}</span>
+        </label>
+      `).join('')}
+    </div>
+    <div class="inline" style="justify-content:flex-end">
+      <button class="btn ghost" id="cancelAssign">Cancel</button>
+      <button class="btn" id="saveAssign">Save Assignments</button>
+    </div>
+  </div></div>`;
+
+  $('#selAll').addEventListener('click', () => {
+    box.querySelectorAll('input[type=checkbox]').forEach(cb => cb.checked = true);
+  });
+  $('#clearAll').addEventListener('click', () => {
+    box.querySelectorAll('input[type=checkbox]').forEach(cb => cb.checked = false);
+  });
+  $('#cancelAssign').addEventListener('click', () => { box.innerHTML = ''; });
+  $('#saveAssign').addEventListener('click', async () => {
+    const selected = [...box.querySelectorAll('input[type=checkbox]:checked')].map(cb => cb.dataset.tid);
+    try {
+      await api('/api/admin/coordinators/set-teams', {
+        method: 'POST',
+        body: { coordId: coord.id, teamIds: selected }
+      });
+      box.innerHTML = '';
+      toast(`Updated team assignments for ${coord.code}`, 'ok');
+      await refresh();
+      coordinators(parentEl);
+    } catch (e) {
+      toast(e.message, 'err');
+    }
+  });
 }
 
 // ---------------- teams ----------------
@@ -142,7 +398,9 @@ function standings(el) {
     ${S.teams.map((t) => `<tr><td>${esc(t.name)}</td><td>${t.rank}</td><td><b>${fmt(t.worth)}</b></td>${t.rounds.map((r) => `<td title="${r.entered ? `start ${fmt(r.capitalStart)} · invested ${fmt(r.invested)} · cash ${fmt(r.cash)} · exit ${fmt(r.exitTotal)} · end ${fmt(r.capitalEnd)}` : 'no chit'}">${r.entered ? `${fmt(r.invested)}${r.capitalEnd !== null ? ` → ${fmt(r.capitalEnd)}` : ''}` : '<span class="muted">–</span>'}</td>`).join('')}</tr>`).join('')}</table>
     <div class="muted">Each round cell shows the amount invested and, once revealed, the team's capital at the end of that round. Hover for the full breakdown.</div></div>`;
   $('#csvBtn').addEventListener('click', async () => {
-    const res = await fetch('/api/admin/export.csv', { headers: { 'x-pin': getPin() } });
+    const token = getToken();
+    const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+    const res = await fetch('/api/admin/export.csv', { headers });
     const url = URL.createObjectURL(await res.blob());
     const a = Object.assign(document.createElement('a'), { href: url, download: 'guess-the-growth-results.csv' });
     a.click();
