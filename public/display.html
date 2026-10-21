@@ -62,7 +62,7 @@ function render() {
       return `<div class="co tile ${g < 0 ? 'neg' : 'pos'}"><div class="n">${esc(c.name)}</div><div class="g num ${g < 0 ? 'down' : 'up'}">${g < 0 ? '▼' : '▲'} ${pctText(g).replace(/^[+−]/, '')}</div></div>`;
     });
     main.innerHTML = `<div class="d-col"><h2 class="d-title">Quarter ${b.round} growth</h2><div class="cos">${tiles.join('')}</div></div>${lb}`;
-  } else if (b.round === 1 && !b.news.length) {
+  } else if (b.phase === 'news' && b.round === 1 && !b.news.length) {
     main.classList.add('single');
     main.innerHTML = `<div class="d-col"><h2 class="d-title">Companies</h2><div class="cos">${b.companies.map((c) => `<div class="co"><div class="n">${esc(c.name)}</div></div>`).join('')}</div></div>`;
   } else {
@@ -73,9 +73,23 @@ function render() {
 function tick() {
   if (!board) return;
   const left = clock.left(board.phaseEndsAt);
-  $timer.textContent = mmss(left);
-  $timer.classList.toggle('low', left !== null && left <= 30 && left > 0);
+  // Only show timer when a phase deadline is active and hasn't expired
+  if (left === null || left === 0) {
+    $timer.textContent = '';
+    $timer.classList.remove('low');
+  } else {
+    $timer.textContent = mmss(left);
+    $timer.classList.toggle('low', left <= 30);
+  }
 }
+
+const $label = document.getElementById('label');
+const $sub = document.getElementById('sub');
+const $timer = document.getElementById('timer');
+const $main = document.getElementById('main');
+
+let failCount = 0;
+let $conn = null;
 
 async function poll() {
   try {
@@ -89,14 +103,23 @@ async function poll() {
       render();
     }
     tick();
+    // Clear connection-lost indicator on success
+    if (failCount > 0) {
+      failCount = 0;
+      if ($conn) { $conn.remove(); $conn = null; }
+    }
   } catch {
     /* keep showing the last good screen if the network blips */
+    failCount++;
+    if (failCount >= 3 && !$conn) {
+      $conn = document.createElement('div');
+      $conn.id = 'conn-lost';
+      $conn.textContent = '\u25cf connection lost';
+      $conn.style.cssText = 'position:fixed;bottom:14px;right:18px;font-size:13px;color:#ff5a4d;opacity:.85;letter-spacing:.04em;font-weight:700;';
+      document.body.append($conn);
+    }
   }
 }
-const $label = document.getElementById('label');
-const $sub = document.getElementById('sub');
-const $timer = document.getElementById('timer');
-const $main = document.getElementById('main');
 poll();
 setInterval(poll, 2500);
 setInterval(tick, 1000);

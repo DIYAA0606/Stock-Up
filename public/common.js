@@ -1,6 +1,6 @@
 export const $ = (s, el = document) => el.querySelector(s);
 export const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-export const fmt = (s) => (s === null || s === undefined ? '–' : Number(s).toFixed(2));
+export const fmt = (s) => { const n = Number(s); return (s === null || s === undefined || isNaN(n)) ? '–' : n.toFixed(2); };
 export const pctText = (g) => {
   const p = Number(g) * 100;
   const t = Math.abs(p) < 1e-9 ? '0' : String(Math.round(Math.abs(p) * 1000) / 1000);
@@ -69,7 +69,12 @@ export async function gate(root, { title, allow }) {
       <p class="muted" id="msg" role="alert"></p></form>`;
     root.querySelector('form').addEventListener('submit', async (e) => {
       e.preventDefault();
-      setPin(root.querySelector('#pin').value.trim());
+      const raw = root.querySelector('#pin').value.trim();
+      if (!raw) {
+        root.querySelector('#msg').textContent = 'Please enter a PIN.';
+        return;
+      }
+      setPin(raw);
       try {
         const r = await api('/api/login', { method: 'POST', body: { pin: getPin() } });
         if (!allow.includes(r.role)) throw new Error('This PIN cannot open this page.');

@@ -111,11 +111,11 @@ function teams(el) {
 // ---------------- news ----------------
 function news(el) {
   const items = S.newsByRound[newsRound] || [];
-  const rows = [0, 1, 2].map((i) => `<div class="stack" style="padding:10px 0;border-bottom:1px solid var(--line)"><div><label for="h${i}">Headline ${i + 1}</label><input id="h${i}" type="text" value="${esc(items[i]?.headline || '')}"></div><div><label for="b${i}">Story</label><textarea id="b${i}" style="min-height:70px;font-family:inherit;font-size:15px">${esc(items[i]?.body || '')}</textarea></div></div>`).join('');
+  const rows = [0, 1, 2, 3, 4, 5].map((i) => `<div class="stack" style="padding:10px 0;border-bottom:1px solid var(--line)"><div><label for="h${i}">Headline ${i + 1}</label><input id="h${i}" type="text" value="${esc(items[i]?.headline || '')}"></div><div><label for="b${i}">Story</label><textarea id="b${i}" style="min-height:70px;font-family:inherit;font-size:15px">${esc(items[i]?.body || '')}</textarea></div></div>`).join('');
   el.innerHTML = `<div class="panel stack" style="max-width:760px"><div class="inline"><label for="nr" style="margin:0">Round</label><select id="nr" style="width:auto">${Array.from({ length: S.rounds }, (_, i) => `<option value="${i + 1}" ${i + 1 === newsRound ? 'selected' : ''}>${i + 1}</option>`).join('')}</select></div>
-    ${rows}<button class="btn" id="saveN">Save news for round ${newsRound}</button><div class="muted">News is shown on the projector during the News Burst and stays up through the investment window.</div></div>`;
+    ${rows}<button class="btn" id="saveN">Save news for round ${newsRound}</button><div class="muted">News is shown on the projector during the News Burst and stays up through the investment window. Up to 6 headlines per round.</div></div>`;
   $('#nr').addEventListener('change', (e) => { newsRound = Number(e.target.value); news($('#body')); });
-  $('#saveN').addEventListener('click', () => act('news', { round: newsRound, items: [0, 1, 2].map((i) => ({ headline: $('#h' + i).value, body: $('#b' + i).value })) }, 'News saved'));
+  $('#saveN').addEventListener('click', () => act('news', { round: newsRound, items: [0, 1, 2, 3, 4, 5].map((i) => ({ headline: $('#h' + i).value, body: $('#b' + i).value })) }, 'News saved'));
 }
 
 // ---------------- growth data ----------------
