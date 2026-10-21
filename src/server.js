@@ -1,42 +1,34 @@
-// Zero-dependency HTTP server: static pages + JSON API. Run on one laptop; everyone else joins over the LAN.
+// Zero-dependency HTTP server: static pages + JSON API.
+// Works on one laptop (npm start) and on Vercel Serverless (api/index.js).
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import os from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { Store } from './store.js';
+import { createStore } from './store.js';
 import * as app from './app.js';
+import { signToken, verifyToken, hashPin, checkPin } from './auth.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(here, '..', 'public');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.ico': 'image/x-icon',
+  '.js':   'text/javascript; charset=utf-8',
+  '.css':  'text/css; charset=utf-8',
+  '.svg':  'image/svg+xml',
+  '.png':  'image/png',
+  '.ico':  'image/x-icon',
 };
 
-function roleOf(store, req) {
-  const pin = String(req.headers['x-pin'] || '');
-  if (!pin) return null;
-  const { pins } = store.state.settings;
-  if (pin === pins.admin) return 'admin';
-  if (pin === pins.coordinator) return 'coordinator';
-  return null;
-}
-
+// ─── Body reader ────────────────────────────────────────────────────────────
 function readBody(req) {
   if (req.body !== undefined && req.body !== null) {
     if (typeof req.body === 'object') return Promise.resolve(req.body);
     if (typeof req.body === 'string') {
-      try {
-        return Promise.resolve(JSON.parse(req.body));
-      } catch {
-        return Promise.reject(new app.HttpError(400, 'Body is not valid JSON'));
-      }
+      try   { return Promise.resolve(JSON.parse(req.body)); }
+      catch { return Promise.reject(new app.HttpError(400, 'Body is not valid JSON')); }
     }
   }
   return new Promise((resolve, reject) => {
@@ -51,162 +43,406 @@ function readBody(req) {
     });
     req.on('end', () => {
       if (!chunks.length) return resolve({});
-      try {
-        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
-      } catch {
-        reject(new app.HttpError(400, 'Body is not valid JSON'));
-      }
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
+      catch { reject(new app.HttpError(400, 'Body is not valid JSON')); }
     });
     req.on('error', reject);
   });
 }
 
-export function createRequestHandler(store) {
-  const st = () => store.state;
-  const fails = new Map(); // ip -> [timestamps] ; slows down PIN guessing
+// ─── Token helper ────────────────────────────────────────────────────────────
+function extractToken(req) {
+  const auth = req.headers['authorization'] || '';
+  if (auth.startsWith('Bearer ')) return auth.slice(7).trim();
+  return null;
+}
 
-  const json = (res, status, obj) => {
-    res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+// ─── Random PIN helper ────────────────────────────────────────────────────────
+const randPin6 = () => String(crypto.randomInt(100000, 999999));
+
+// ─── Request handler factory ──────────────────────────────────────────────────
+export function createRequestHandler(store) {
+  const json = (res, status, obj, extra = {}) => {
+    res.writeHead(status, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store',
+      ...extra,
+    });
     res.end(JSON.stringify(obj));
   };
 
-  function need(req, res, ...roles) {
+  /**
+   * Verify the bearer token and check the required role.
+   * Returns the token payload: { role, coordId, exp }
+   */
+  async function need(req, res, ...roles) {
     const rawIp = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '?');
     const ip = rawIp.split(',')[0].trim();
-    const recent = (fails.get(ip) || []).filter((t) => Date.now() - t < 60_000);
-    fails.set(ip, recent);
-    if (recent.length >= 15) throw new app.HttpError(429, 'Too many wrong PINs. Wait a minute.');
-    const role = roleOf(store, req);
-    if (!role) {
-      recent.push(Date.now());
-      throw new app.HttpError(401, 'Wrong or missing PIN');
+
+    const blocked = await store.isRateLimited(`ip:${ip}`, 15, 60);
+    if (blocked) throw new app.HttpError(429, 'Too many failed attempts. Wait a minute.');
+
+    const token = extractToken(req);
+    if (!token) {
+      await store.recordFailAndCheck(`ip:${ip}`, 15, 60);
+      throw new app.HttpError(401, 'Missing or invalid token. Please log in.');
     }
-    if (!roles.includes(role)) throw new app.HttpError(403, 'Not allowed for your role');
-    return role;
+
+    let payload;
+    try {
+      payload = verifyToken(token);
+    } catch (e) {
+      await store.recordFailAndCheck(`ip:${ip}`, 15, 60);
+      throw e.status ? e : new app.HttpError(401, 'Invalid or expired token');
+    }
+
+    if (!roles.includes(payload.role)) throw new app.HttpError(403, 'Not allowed for your role');
+    return payload;
   }
 
-  // Saves state, writes an audit line, and keeps a backup when results go public.
-  const commit = (role, action, detail, { backup } = {}) => {
-    store.save();
-    store.audit(role, action, detail);
-    if (backup) store.backup(backup);
-  };
+  /**
+   * Save state, write audit line, optionally take a backup snapshot.
+   */
+  async function commit(st, who, action, detail = {}, { backup } = {}) {
+    await store.save(st);
+    await store.audit(who, action, detail);
+    if (backup) await store.backup(backup);
+  }
 
+  // ─── Main API router ─────────────────────────────────────────────────────
   async function api(req, res, url) {
     const m = req.method;
     const p = url.pathname;
 
-    if (m === 'GET' && p === '/api/board') return json(res, 200, app.buildBoard(st()));
+    // ── Public board (no auth — projector safe) ──────────────────────────
+    if (m === 'GET' && p === '/api/board') {
+      const cached = await store.getBoardCache();
+      if (cached) {
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 's-maxage=2, stale-while-revalidate=5',
+          'X-Cache': 'HIT',
+        });
+        return res.end(cached);
+      }
+      const st = await store.load();
+      const board = app.buildBoard(st);
+      const boardJson = JSON.stringify(board);
+      await store.setBoardCache(boardJson, 2);
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 's-maxage=2, stale-while-revalidate=5',
+      });
+      return res.end(boardJson);
+    }
 
-    if (m === 'POST' && p === '/api/login') {
+    // ── Login: POST /api/auth/login { code, pin } ────────────────────────
+    // code = "ADMIN" for the admin, coordinator code (e.g. "C01") for coordinators
+    if (m === 'POST' && p === '/api/auth/login') {
       const body = await readBody(req);
-      req.headers['x-pin'] = String(body.pin || '');
-      const role = need(req, res, 'admin', 'coordinator');
-      return json(res, 200, { role });
+      const code = String(body.code || '').trim().toUpperCase();
+      const pin  = String(body.pin  || '').trim();
+      const rawIp = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '?');
+      const ip = rawIp.split(',')[0].trim();
+
+      const blockedIp   = await store.isRateLimited(`ip:${ip}`, 15, 60);
+      const blockedCode = await store.isRateLimited(`code:${code}`, 10, 60);
+      if (blockedIp || blockedCode) throw new app.HttpError(429, 'Too many failed attempts. Try again later.');
+
+      if (code === 'ADMIN') {
+        const st = await store.load();
+        const valid = checkPin(pin, st.settings.adminPinHash);
+        if (!valid) {
+          await store.recordFailAndCheck(`ip:${ip}`, 15, 60);
+          await store.recordFailAndCheck(`code:ADMIN`, 10, 60);
+          throw new app.HttpError(401, 'Invalid admin PIN');
+        }
+        const token = signToken({ role: 'admin', coordId: 'ADMIN' });
+        await store.audit('ADMIN', 'login', { ip });
+        return json(res, 200, { token, role: 'admin' });
+      }
+
+      // Coordinator login
+      const coords = await store.getCoordinators();
+      const coord = coords.find((c) => c.code.toUpperCase() === code);
+      if (!coord || !coord.enabled) {
+        await store.recordFailAndCheck(`ip:${ip}`, 15, 60);
+        await store.recordFailAndCheck(`code:${code}`, 10, 60);
+        throw new app.HttpError(401, 'Invalid coordinator code or PIN');
+      }
+      const validCoord = checkPin(pin, coord.pinHash);
+      if (!validCoord) {
+        await store.recordFailAndCheck(`ip:${ip}`, 15, 60);
+        await store.recordFailAndCheck(`code:${code}`, 10, 60);
+        throw new app.HttpError(401, 'Invalid coordinator code or PIN');
+      }
+      const token = signToken({ role: 'coordinator', coordId: coord.id });
+      await store.audit(coord.code, 'login', { ip });
+      return json(res, 200, { token, role: 'coordinator', coordId: coord.id });
     }
 
-    // ----- coordinator + admin -----
-    if (m === 'GET' && p === '/api/entry') {
-      const role = need(req, res, 'admin', 'coordinator');
-      return json(res, 200, app.entryContext(st(), role, url.searchParams.get('round')));
+    // ── Coordinator entry context: GET /api/coord/entry ──────────────────
+    if (m === 'GET' && p === '/api/coord/entry') {
+      const payload = await need(req, res, 'admin', 'coordinator');
+      const st = await store.load();
+
+      let teams;
+      if (payload.role === 'admin') {
+        teams = st.teams; // admin sees all
+      } else {
+        const coord = await store.getCoordinator(payload.coordId);
+        if (!coord || !coord.enabled) throw new app.HttpError(403, 'Coordinator account disabled');
+        const allowed = new Set(coord.assignedTeams || []);
+        teams = st.teams.filter((t) => allowed.has(t.id));
+      }
+
+      const roundParam = url.searchParams.get('round');
+      return json(res, 200, app.entryContext(st, payload.role, roundParam, teams));
     }
-    if (m === 'POST' && p === '/api/entry') {
-      const role = need(req, res, 'admin', 'coordinator');
+
+    // ── Coordinator entry submit: POST /api/coord/entry ──────────────────
+    if (m === 'POST' && p === '/api/coord/entry') {
+      const payload = await need(req, res, 'admin', 'coordinator');
       const b = await readBody(req);
-      const before = (st().allocations[b.teamId] || {})[b.round];
-      const result = app.applyEntry(st(), { teamId: b.teamId, round: b.round, amounts: b.amounts, role });
-      commit(role, before ? 'entry.correct' : 'entry.set', { teamId: b.teamId, round: Number(b.round), before: before?.amounts, after: st().allocations[b.teamId][Number(b.round)].amounts });
+      const st = await store.load();
+
+      // Enforce coordinator isolation: only allowed teams
+      if (payload.role === 'coordinator') {
+        const coord = await store.getCoordinator(payload.coordId);
+        if (!coord || !coord.enabled) throw new app.HttpError(403, 'Coordinator account disabled');
+        if (!coord.assignedTeams.includes(b.teamId)) {
+          throw new app.HttpError(403, 'You are not assigned to this team');
+        }
+      }
+
+      const round = Number(b.round);
+      const before = (st.allocations[b.teamId] || {})[round];
+
+      // Idempotent check — same data already saved
+      if (before && JSON.stringify(before.amounts) === JSON.stringify(b.amounts)) {
+        return json(res, 200, { ok: true, idempotent: true });
+      }
+
+      const result = app.applyEntry(st, {
+        teamId: b.teamId,
+        round,
+        amounts: b.amounts,
+        role: payload.role,
+        coordId: payload.coordId,
+      });
+
+      // Granular write — only this team's allocation
+      await store.saveAlloc(b.teamId, round, st.allocations[b.teamId][round]);
+      await store.audit(payload.coordId, before ? 'entry.correct' : 'entry.set', {
+        teamId: b.teamId,
+        round,
+        before: before?.amounts,
+        after: b.amounts,
+      });
       return json(res, 200, result);
     }
 
-    // ----- admin only -----
+    // ── Admin-only routes ─────────────────────────────────────────────────
     if (p.startsWith('/api/admin/')) {
-      const role = need(req, res, 'admin');
+      const payload = await need(req, res, 'admin');
       const route = p.slice('/api/admin/'.length);
+      const st = await store.load();
 
-      if (m === 'GET' && route === 'state') return json(res, 200, { ...app.adminState(st()), pins: st().settings.pins });
-      if (m === 'GET' && route === 'export.csv') {
-        res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="guess-the-growth-results.csv"' });
-        return res.end(app.exportCsv(st()));
-      }
-      if (m === 'GET' && route === 'audit') {
-        const f = store.auditFile;
-        const lines = fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim().split('\n').slice(-200) : [];
-        return json(res, 200, { lines: lines.map((l) => JSON.parse(l)).reverse() });
+      // GET routes
+      if (m === 'GET') {
+        if (route === 'state') {
+          return json(res, 200, {
+            ...app.adminState(st),
+            adminPinHash: st.settings.adminPinHash,
+          });
+        }
+        if (route === 'export.csv') {
+          res.writeHead(200, {
+            'Content-Type': 'text/csv; charset=utf-8',
+            'Content-Disposition': 'attachment; filename="guess-the-growth-results.csv"',
+          });
+          return res.end(app.exportCsv(st));
+        }
+        if (route === 'audit') {
+          const lines = await store.getAuditLines(200);
+          return json(res, 200, { lines });
+        }
+        if (route === 'coordinators') {
+          const coords = await store.getCoordinators();
+          // Strip pinHash before returning to client
+          return json(res, 200, {
+            coordinators: coords.map(({ pinHash, ...rest }) => rest),
+          });
+        }
       }
 
+      // POST routes
       if (m === 'POST') {
         const b = await readBody(req);
         switch (route) {
           case 'advance': {
-            app.advance(st(), { force: !!b.force });
-            const c = app.current(st());
-            commit(role, 'advance', { to: c }, { backup: c.phase === 'revealed' || c.phase === 'final' ? `r${c.round}-${c.phase}` : undefined });
+            app.advance(st, { force: !!b.force });
+            const c = app.current(st);
+            await commit(st, 'ADMIN', 'advance', { to: c }, {
+              backup: (c.phase === 'revealed' || c.phase === 'final') ? `r${c.round}-${c.phase}` : undefined,
+            });
             break;
           }
           case 'back':
-            app.back(st());
-            commit(role, 'back', { to: app.current(st()) });
+            app.back(st);
+            await commit(st, 'ADMIN', 'back', { to: app.current(st) });
             break;
           case 'final':
-            app.finalReveal(st(), b.action);
-            commit(role, 'final.' + b.action, {});
+            app.finalReveal(st, b.action);
+            await commit(st, 'ADMIN', `final.${b.action}`, {});
             break;
           case 'teams': {
-            const names = Array.isArray(b.names) ? b.names : String(b.names || '').split(/\r?\n/);
-            const added = app.addTeams(st(), names);
-            commit(role, 'teams.add', { added: added.map((t) => t.name) });
+            const names = Array.isArray(b.names)
+              ? b.names
+              : String(b.names || '').split(/\r?\n/);
+            const added = app.addTeams(st, names);
+            await commit(st, 'ADMIN', 'teams.add', { added: added.map((t) => t.name) });
             break;
           }
           case 'team.remove':
-            app.removeTeam(st(), b.id);
-            commit(role, 'team.remove', { id: b.id });
+            app.removeTeam(st, b.id);
+            await store.deleteAlloc(b.id);
+            await commit(st, 'ADMIN', 'team.remove', { id: b.id });
             break;
           case 'news':
-            app.setNews(st(), b.round, b.items);
-            commit(role, 'news.set', { round: b.round });
+            app.setNews(st, b.round, b.items);
+            await commit(st, 'ADMIN', 'news.set', { round: b.round });
             break;
           case 'returns':
-            app.setReturns(st(), b.csv);
-            commit(role, 'returns.set', {}, { backup: 'returns' });
+            app.setReturns(st, b.csv);
+            await commit(st, 'ADMIN', 'returns.set', {}, { backup: 'returns' });
             break;
           case 'settings':
-            app.setSettings(st(), b);
-            commit(role, 'settings', b);
+            app.setSettings(st, b);
+            await commit(st, 'ADMIN', 'settings', b);
             break;
           case 'backup':
-            store.save();
-            store.backup('manual');
+            await store.backup('manual');
             break;
           case 'reset':
             if (b.confirm !== 'RESET') throw new app.HttpError(400, 'Type RESET to confirm');
-            store.backup('before-reset');
-            app.resetEvent(st(), { clearTeams: !!b.clearTeams });
-            commit(role, 'reset', { clearTeams: !!b.clearTeams });
+            await store.backup('before-reset');
+            app.resetEvent(st, { clearTeams: !!b.clearTeams });
+            await commit(st, 'ADMIN', 'reset', { clearTeams: !!b.clearTeams });
             break;
+
+          // ── Coordinator management ────────────────────────────────────
+          case 'coordinators/generate': {
+            // b.count: number of coordinators to create
+            const count = Math.max(1, Math.min(100, Number(b.count) || 1));
+            const existing = await store.getCoordinators();
+            const existing_codes = new Set(existing.map((c) => c.code));
+            const created = [];
+            for (let i = 1; i <= count + existing.length; i++) {
+              const code = `C${String(i).padStart(2, '0')}`;
+              if (existing_codes.has(code)) continue;
+              if (created.length >= count) break;
+              const pin = randPin6();
+              const coord = {
+                id: `coord-${code.toLowerCase()}`,
+                code,
+                pinHash: hashPin(pin),
+                assignedTeams: [],
+                enabled: true,
+                createdAt: Date.now(),
+                _pinPlain: pin, // returned once, never stored again
+              };
+              await store.setCoordinator(coord);
+              await store.audit('ADMIN', 'coord.create', { code });
+              created.push({ code, pin, id: coord.id });
+            }
+            return json(res, 200, { created });
+          }
+
+          case 'coordinators/assign': {
+            // Auto-distribute all teams evenly across enabled coordinators
+            const allCoords = (await store.getCoordinators()).filter((c) => c.enabled);
+            const allTeams = (await store.load()).teams;
+            if (!allCoords.length) throw new app.HttpError(400, 'No enabled coordinators');
+            // Clear existing assignments
+            for (const c of allCoords) {
+              c.assignedTeams = [];
+            }
+            // Round-robin assignment
+            allTeams.forEach((t, i) => {
+              allCoords[i % allCoords.length].assignedTeams.push(t.id);
+            });
+            for (const c of allCoords) {
+              await store.setCoordinator(c);
+            }
+            await store.audit('ADMIN', 'coord.auto-assign', { teams: allTeams.length, coords: allCoords.length });
+            return json(res, 200, { ok: true });
+          }
+
+          case 'coordinators/reset-pin': {
+            const coord = await store.getCoordinator(b.coordId);
+            if (!coord) throw new app.HttpError(404, 'Coordinator not found');
+            const pin = randPin6();
+            coord.pinHash = hashPin(pin);
+            await store.setCoordinator(coord);
+            await store.audit('ADMIN', 'coord.reset-pin', { code: coord.code });
+            return json(res, 200, { pin }); // returned once only
+          }
+
+          case 'coordinators/toggle': {
+            const coord = await store.getCoordinator(b.coordId);
+            if (!coord) throw new app.HttpError(404, 'Coordinator not found');
+            coord.enabled = !coord.enabled;
+            await store.setCoordinator(coord);
+            await store.audit('ADMIN', coord.enabled ? 'coord.enable' : 'coord.disable', { code: coord.code });
+            return json(res, 200, { enabled: coord.enabled });
+          }
+
+          case 'coordinators/delete': {
+            const coord = await store.getCoordinator(b.coordId);
+            if (!coord) throw new app.HttpError(404, 'Coordinator not found');
+            await store.deleteCoordinator(b.coordId);
+            await store.audit('ADMIN', 'coord.delete', { code: coord.code });
+            return json(res, 200, { ok: true });
+          }
+
+          case 'coordinators/set-teams': {
+            // b.coordId, b.teamIds []
+            const coord = await store.getCoordinator(b.coordId);
+            if (!coord) throw new app.HttpError(404, 'Coordinator not found');
+            coord.assignedTeams = Array.isArray(b.teamIds) ? b.teamIds : [];
+            await store.setCoordinator(coord);
+            await store.audit('ADMIN', 'coord.set-teams', { code: coord.code, teams: coord.assignedTeams });
+            return json(res, 200, { ok: true });
+          }
+
           default:
             throw new app.HttpError(404, 'Unknown admin action');
         }
         return json(res, 200, { ok: true });
       }
     }
+
     throw new app.HttpError(404, 'Not found');
   }
 
+  // ─── Static file serving ──────────────────────────────────────────────────
   function serveStatic(req, res, url) {
     let rel = decodeURIComponent(url.pathname);
     if (rel === '/') rel = '/index.html';
     const file = path.normalize(path.join(PUBLIC, rel));
     if (!file.startsWith(PUBLIC + path.sep)) {
-      res.writeHead(403);
-      return res.end('Forbidden');
+      res.writeHead(403); return res.end('Forbidden');
     }
     fs.readFile(file, (err, data) => {
       if (err) {
         res.writeHead(404, { 'Content-Type': 'text/plain' });
         return res.end('Not found');
       }
-      res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
+      res.writeHead(200, {
+        'Content-Type': MIME[path.extname(file)] || 'application/octet-stream',
+        'Cache-Control': 'no-cache',
+      });
       res.end(data);
     });
   }
@@ -228,22 +464,22 @@ export function createApp(store) {
   return http.createServer(createRequestHandler(store));
 }
 
-// ---- run directly: node src/server.js ----
+// ── Run directly: node src/server.js ────────────────────────────────────────
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const dataDir = process.env.DATA_DIR || path.join(here, '..', 'data');
-  const store = new Store(dataDir);
-  if (process.env.ADMIN_PIN) store.state.settings.pins.admin = process.env.ADMIN_PIN;
-  if (process.env.COORDINATOR_PIN) store.state.settings.pins.coordinator = process.env.COORDINATOR_PIN;
-  store.save();
+  const store = await createStore();
+  const st = await store.load();
   const port = Number(process.env.PORT || 3000);
   createApp(store).listen(port, '0.0.0.0', () => {
-    const ips = Object.values(os.networkInterfaces()).flat().filter((i) => i && i.family === 'IPv4' && !i.internal).map((i) => i.address);
-    const { pins } = store.state.settings;
+    const ips = Object.values(os.networkInterfaces())
+      .flat()
+      .filter((i) => i && i.family === 'IPv4' && !i.internal)
+      .map((i) => i.address);
+
     console.log('\nGuess the Growth is running\n');
     console.log(`  This laptop : http://localhost:${port}`);
     for (const ip of ips) console.log(`  On the LAN  : http://${ip}:${port}`);
-    console.log(`\n  Admin PIN       : ${pins.admin}`);
-    console.log(`  Coordinator PIN : ${pins.coordinator}`);
-    console.log('\n  Pages: /display.html (projector)  /entry.html (coordinators)  /admin.html (you)\n');
+    if (store.adminPinPlain) console.log(`\n  Admin PIN       : ${store.adminPinPlain}`);
+    if (store.coordinatorPinPlain) console.log(`  Coordinator PIN : ${store.coordinatorPinPlain}`);
+    console.log('\n  Pages: /display.html (projector)  /coordinator.html (coordinators)  /admin.html (you)\n');
   });
 }

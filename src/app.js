@@ -141,14 +141,22 @@ export function buildBoard(st, { full = false } = {}) {
 }
 
 // ---------- coordinator entry ----------
-export function entryContext(st, role, requestedRound) {
+/**
+ * @param {object} st                  Full game state
+ * @param {string} role                'admin' | 'coordinator'
+ * @param {string|null} requestedRound Round override (admin only)
+ * @param {Array|null}  teamsOverride  Pre-filtered team list (coordinator isolation)
+ */
+export function entryContext(st, role, requestedRound, teamsOverride = null) {
   const c = current(st);
   const maxRound = c.round; // nobody can enter a future round
   let round = c.round;
   if (role === 'admin' && requestedRound) round = Math.min(Math.max(1, Number(requestedRound)), maxRound);
   const returns = buildReturns(st.companies, st.settings.rounds);
   const writable = role === 'admin' ? true : round === c.round && (c.phase === 'investing' || c.phase === 'entry');
-  const teams = st.teams.map((t) => {
+  // Use the override (coordinator's assigned teams) or all teams (admin)
+  const srcTeams = teamsOverride !== null ? teamsOverride : st.teams;
+  const teams = srcTeams.map((t) => {
     const comp = computeFor(st, t, st.settings.rounds, returns); // full projection: capitalStart only depends on earlier rounds
     const row = comp.rounds[round - 1];
     const alloc = (st.allocations[t.id] || {})[round];
@@ -174,7 +182,7 @@ export function entryContext(st, role, requestedRound) {
   };
 }
 
-export function applyEntry(st, { teamId, round, amounts, role }) {
+export function applyEntry(st, { teamId, round, amounts, role, coordId }) {
   const R = st.settings.rounds;
   const c = current(st);
   const team = st.teams.find((t) => t.id === teamId);
@@ -203,7 +211,7 @@ export function applyEntry(st, { teamId, round, amounts, role }) {
 
   // Apply to a copy, then check every team-round budget so a late correction can never break a later round.
   const trial = { ...st, allocations: { ...st.allocations, [teamId]: { ...(st.allocations[teamId] || {}) } } };
-  trial.allocations[teamId][round] = { amounts: clean, by: role, at: Date.now() };
+  trial.allocations[teamId][round] = { amounts: clean, by: coordId || role, at: Date.now() };
   const comp = computeFor(trial, team, R);
   const bad = comp.rounds.find((x) => x.overBudget);
   if (bad) {
