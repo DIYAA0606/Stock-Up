@@ -50,7 +50,7 @@ function newsHtml(b) {
 function render() {
   const b = board;
   $label.textContent = b.label;
-  $sub.textContent = b.phase === 'final' ? '' : `Quarter ${b.round} of ${b.rounds}${b.roundName ? ` � ${b.roundName}` : ""}`;
+  $sub.textContent = b.phase === 'final' ? '' : `Quarter ${b.round} of ${b.rounds}${b.roundName ? ` - ${b.roundName}` : ""}`;
   const main = $main;
   main.className = 'd-main';
   if (b.teams.length > 12) main.classList.add('wide-lb'); // two-column board needs the room for longer team names
@@ -62,7 +62,7 @@ function render() {
   } else if (b.phase === 'revealed') {
     const tiles = b.companies.map((c) => {
       const g = Number(c.growth[b.round - 1]);
-      return `<div class="co tile ${g < 0 ? 'neg' : 'pos'}"><div class="n">${esc(c.name)}</div><div class="g num ${g < 0 ? 'down' : 'up'}">${g < 0 ? '▼' : '▲'} ${pctText(g).replace(/^[+−]/, '')}</div></div>`;
+      return `<div class="co tile ${g < 0 ? 'neg' : 'pos'}"><div class="n">${esc(c.name)}</div><div class="g num ${g < 0 ? 'down' : 'up'}">${g < 0 ? '▼' : '▲'} ${pctText(g).replace(/^[+−-]/, '')}</div></div>`;
     });
     main.innerHTML = `<div class="d-col"><h2 class="d-title">Quarter ${b.round} growth</h2><div class="cos">${tiles.join('')}</div></div>${lb}`;
   } else if (b.phase === 'news' && b.round === 1 && !b.news.length) {
@@ -124,7 +124,7 @@ async function poll() {
   }
 }
 poll();
-setInterval(poll, 2500);
+setInterval(poll, 5000);
 setInterval(tick, 1000);
 </script>
 </body>

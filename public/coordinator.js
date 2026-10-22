@@ -347,7 +347,7 @@ setInterval(async () => {
   } catch (e) {
     if (e.status === 401) location.reload();
   }
-}, 3000);
+}, 8000);
 
 setInterval(() => {
   const l = clock.left(ctx?.phaseEndsAt);
