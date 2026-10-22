@@ -125,10 +125,26 @@ export function createRequestHandler(store) {
     if (backup) await store.backup(backup);
   }
 
+  async function autoAssignTeams(teams) {
+    const coordinators = (await store.getCoordinators()).filter((c) => c.enabled);
+    if (!coordinators.length) return false;
+    for (const coordinator of coordinators) coordinator.assignedTeams = [];
+    teams.forEach((team, i) => coordinators[i % coordinators.length].assignedTeams.push(team.id));
+    for (const coordinator of coordinators) await store.setCoordinator(coordinator);
+    await store.audit('ADMIN', 'coord.auto-assign', { teams: teams.length, coords: coordinators.length });
+    return true;
+  }
+
   // ─── Main API router ──────────────────────────────────────────────────────
   async function api(req, res, url) {
     const m = req.method;
     const p = url.pathname;
+
+    const missingRedisEnv = ['ADMIN_PIN', 'SESSION_SECRET']
+      .filter((name) => !String(process.env[name] || '').trim());
+    if (store.redis && missingRedisEnv.length) {
+      throw new app.HttpError(503, `Redis mode requires the ${missingRedisEnv.join(' and ')} environment variable${missingRedisEnv.length > 1 ? 's' : ''}.`);
+    }
 
     // ── Public board (no auth — projector safe) ───────────────────────────
     if (m === 'GET' && p === '/api/board') {
@@ -360,9 +376,9 @@ export function createRequestHandler(store) {
         if (route === 'coordinators') {
           const coords = await store.getCoordinators();
           return json(res, 200, {
-            coordinators: coords.map(({ pinHash, ...rest }) => ({
+            coordinators: coords.map(({ pinHash, _pinPlain, pinPlain, ...rest }) => ({
               ...rest,
-              pin: rest.pinPlain || '',
+              pin: pinPlain || _pinPlain || '',
             })),
           });
         }
@@ -394,6 +410,7 @@ export function createRequestHandler(store) {
               : String(b.names || '').split(/\r?\n/);
             const added = app.addTeams(st, names);
             await commit(st, 'ADMIN', 'teams.add', { added: added.map((t) => t.name) });
+            await autoAssignTeams(st.teams);
             break;
           }
           case 'team.remove':
@@ -458,35 +475,12 @@ export function createRequestHandler(store) {
               await store.audit('ADMIN', 'coord.create', { code });
               created.push({ code, pin, id: coord.id });
             }
-            const allCoords = (await store.getCoordinators()).filter((c) => c.enabled);
-            const allTeams = (await store.load()).teams;
-            for (const c of allCoords) {
-              c.assignedTeams = [];
-            }
-            allTeams.forEach((t, i) => {
-              allCoords[i % allCoords.length].assignedTeams.push(t.id);
-            });
-            for (const c of allCoords) {
-              await store.setCoordinator(c);
-            }
-            await store.audit('ADMIN', 'coord.auto-assign', { teams: allTeams.length, coords: allCoords.length });
+            await autoAssignTeams(st.teams);
             return json(res, 200, { created });
           }
 
           case 'coordinators/assign': {
-            const allCoords = (await store.getCoordinators()).filter((c) => c.enabled);
-            const allTeams = (await store.load()).teams;
-            if (!allCoords.length) throw new app.HttpError(400, 'No enabled coordinators');
-            for (const c of allCoords) {
-              c.assignedTeams = [];
-            }
-            allTeams.forEach((t, i) => {
-              allCoords[i % allCoords.length].assignedTeams.push(t.id);
-            });
-            for (const c of allCoords) {
-              await store.setCoordinator(c);
-            }
-            await store.audit('ADMIN', 'coord.auto-assign', { teams: allTeams.length, coords: allCoords.length });
+            if (!await autoAssignTeams(st.teams)) throw new app.HttpError(400, 'No enabled coordinators');
             return json(res, 200, { ok: true });
           }
 
@@ -495,6 +489,7 @@ export function createRequestHandler(store) {
             if (!coord) throw new app.HttpError(404, 'Coordinator not found');
             const pin = randPin6();
             coord.pinHash = hashPin(pin);
+            coord.pinPlain = pin;
             await store.setCoordinator(coord);
             await store.audit('ADMIN', 'coord.reset-pin', { code: coord.code });
             return json(res, 200, { pin });

@@ -7,11 +7,9 @@ import { hashPin } from './auth.js';
 
 const randPin = () => String(crypto.randomInt(1000, 10000));
 
-function freshConfig() {
+function freshConfig(adminPin, coordinatorPin) {
   const csv = loadReturnsCsv();
   const companies = parseReturnsCsv(csv, 4).map((c, i) => ({ id: `c${i + 1}`, ...c }));
-  const ap = process.env.ADMIN_PIN;
-  const cp = process.env.COORDINATOR_PIN;
 
   const settings = {
     startingCapital: '100',
@@ -21,8 +19,8 @@ function freshConfig() {
     penaltyPercent: 15,
     minPerStock: '1',
     rumorFee: '5',
-    adminPinHash: ap ? hashPin(ap) : hashPin('1234'),
-    coordinatorPinHash: cp ? hashPin(cp) : hashPin('1234'),
+    adminPinHash: hashPin(adminPin),
+    coordinatorPinHash: coordinatorPin ? hashPin(coordinatorPin) : null,
   };
 
   return {
@@ -56,15 +54,21 @@ export class RedisStore {
   }
 
   async load() {
+    const adminPin = String(process.env.ADMIN_PIN || '').trim();
+    if (!adminPin) throw new Error('Redis mode requires the ADMIN_PIN environment variable.');
+    const coordinatorPin = String(process.env.COORDINATOR_PIN || '').trim();
+
     let rawConfig = await this.redis.get('config');
     let config;
 
     if (!rawConfig) {
-      config = freshConfig();
+      config = freshConfig(adminPin, coordinatorPin);
       await this.redis.set('config', JSON.stringify(config));
     } else {
       config = typeof rawConfig === 'string' ? JSON.parse(rawConfig) : rawConfig;
     }
+    config.settings.adminPinHash = hashPin(adminPin);
+    config.settings.coordinatorPinHash = coordinatorPin ? hashPin(coordinatorPin) : null;
 
     const rawTeams = (await this.redis.hgetall('teams')) || {};
     const teams = Object.values(rawTeams).map((t) => (typeof t === 'string' ? JSON.parse(t) : t));
