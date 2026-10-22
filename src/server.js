@@ -495,6 +495,7 @@ export function createRequestHandler(store) {
             if (!coord) throw new app.HttpError(404, 'Coordinator not found');
             const pin = randPin6();
             coord.pinHash = hashPin(pin);
+            coord.pinPlain = pin;
             await store.setCoordinator(coord);
             await store.audit('ADMIN', 'coord.reset-pin', { code: coord.code });
             return json(res, 200, { pin });
