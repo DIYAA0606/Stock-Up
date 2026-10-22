@@ -84,7 +84,7 @@ function renderTeams() {
   const list = visibleTeams();
   $('#teams').innerHTML = list.length
     ? list.map((t) => `<button class="team ${t.id === sel ? 'sel' : ''}" data-id="${t.id}"><span>${esc(t.name)}<br><span class="cap num">Available ${fmt(t.capitalStart)} Cr</span></span>${t.entered ? '<span class="tick" aria-label="entered">✓</span>' : ''}</button>`).join('')
-    : `<div class="muted">${ctx.teams.length === 0 ? 'No teams assigned to you yet.' : `No team matches "${esc(filter)}".`}</div>`;
+    : `<div class="muted" style="padding:12px;line-height:1.4">${ctx.teams.length === 0 ? 'No teams found in this event yet.<br><br>Please add teams in the <a href="/admin.html" style="color:var(--accent);text-decoration:underline">Admin Panel</a> (Teams tab).' : `No team matches "${esc(filter)}".`}</div>`;
   for (const b of $('#teams').querySelectorAll('.team')) b.addEventListener('click', () => choose(b.dataset.id));
 }
 
@@ -108,7 +108,9 @@ function totals() {
 function renderForm() {
   const box = $('#form');
   if (!sel) {
-    box.innerHTML = `<p class="muted">Pick one of your assigned teams on the left. Type part of the name and press Enter. In the amounts, Enter moves to the next company and Ctrl+Enter jumps straight to the review.</p>`;
+    box.innerHTML = ctx.teams.length === 0
+      ? `<div style="padding:16px"><p class="muted">No teams are available in this event yet.</p><p class="muted">Go to the <a href="/admin.html" style="color:var(--accent);text-decoration:underline">Admin Panel</a> &rarr; <b>Teams</b> tab to add or import your team list.</p></div>`
+      : `<p class="muted">Pick one of your assigned teams on the left. Type part of the name and press Enter. In the amounts, Enter moves to the next company and Ctrl+Enter jumps straight to the review.</p>`;
     return;
   }
   const { t } = totals();

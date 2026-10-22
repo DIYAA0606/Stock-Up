@@ -241,9 +241,14 @@ export function createRequestHandler(store) {
         teams = st.teams; // admin sees all
       } else {
         const coord = await store.getCoordinator(payload.coordId);
-        if (!coord || !coord.enabled) throw new app.HttpError(403, 'Coordinator account disabled');
-        const allowed = new Set(coord.assignedTeams || []);
-        teams = st.teams.filter((t) => allowed.has(t.id));
+        if (coord && !coord.enabled) throw new app.HttpError(403, 'Coordinator account disabled');
+        if (coord && coord.assignedTeams && coord.assignedTeams.length > 0) {
+          const allowed = new Set(coord.assignedTeams);
+          teams = st.teams.filter((t) => allowed.has(t.id));
+        } else {
+          // If no specific teams are assigned to this coordinator yet, show all teams
+          teams = st.teams;
+        }
       }
 
       const roundParam = url.searchParams.get('round');
@@ -256,12 +261,14 @@ export function createRequestHandler(store) {
       const b = await readBody(req);
       const st = await store.load();
 
-      // Enforce coordinator isolation: only allowed teams
+      // Enforce coordinator isolation only when specific teams are assigned
       if (payload.role === 'coordinator' && payload.coordId !== 'legacy') {
         const coord = await store.getCoordinator(payload.coordId);
-        if (!coord || !coord.enabled) throw new app.HttpError(403, 'Coordinator account disabled');
-        if (!coord.assignedTeams.includes(b.teamId)) {
-          throw new app.HttpError(403, 'You are not assigned to this team');
+        if (coord && !coord.enabled) throw new app.HttpError(403, 'Coordinator account disabled');
+        if (coord && coord.assignedTeams && coord.assignedTeams.length > 0) {
+          if (!coord.assignedTeams.includes(b.teamId)) {
+            throw new app.HttpError(403, 'You are not assigned to this team');
+          }
         }
       }
 
