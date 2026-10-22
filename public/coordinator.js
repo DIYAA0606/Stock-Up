@@ -323,8 +323,8 @@ function goNextPending() {
 
 function render() { renderBar(); renderTeams(); renderForm(); }
 
-shell();
 await load();
+shell();
 render();
 $('#filter').focus();
 
