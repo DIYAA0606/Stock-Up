@@ -458,6 +458,18 @@ export function createRequestHandler(store) {
               await store.audit('ADMIN', 'coord.create', { code });
               created.push({ code, pin, id: coord.id });
             }
+            const allCoords = (await store.getCoordinators()).filter((c) => c.enabled);
+            const allTeams = (await store.load()).teams;
+            for (const c of allCoords) {
+              c.assignedTeams = [];
+            }
+            allTeams.forEach((t, i) => {
+              allCoords[i % allCoords.length].assignedTeams.push(t.id);
+            });
+            for (const c of allCoords) {
+              await store.setCoordinator(c);
+            }
+            await store.audit('ADMIN', 'coord.auto-assign', { teams: allTeams.length, coords: allCoords.length });
             return json(res, 200, { created });
           }
 
