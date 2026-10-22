@@ -452,7 +452,7 @@ export function createRequestHandler(store) {
                 assignedTeams: [],
                 enabled: true,
                 createdAt: Date.now(),
-                _pinPlain: pin,
+                pinPlain: pin,
               };
               await store.setCoordinator(coord);
               await store.audit('ADMIN', 'coord.create', { code });
@@ -563,6 +563,32 @@ export function createApp(store) {
 }
 
 // ─── Run directly: node src/server.js ────────────────────────────────────────
+// Load .env file if present (simple key=value, no external dependencies)
+try {
+  const envPath = new URL('../.env', import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1');
+  if (fs.existsSync(envPath)) {
+    const lines = fs.readFileSync(envPath, 'utf8').split(/\r?\n/);
+
+    for (const line of lines) {
+      const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
+      if (m && !process.env[m[1]]) process.env[m[1]] = m[2].trim();
+    }
+  }
+} catch {}
+
+// Guard: refuse to start without SESSION_SECRET and ADMIN_PIN
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const _missing = [];
+  if (!process.env.SESSION_SECRET) _missing.push('SESSION_SECRET');
+  if (!process.env.ADMIN_PIN) _missing.push('ADMIN_PIN');
+  if (_missing.length) {
+    console.error('\n❌  Cannot start: missing required environment variables:\n');
+    for (const v of _missing) console.error('     ' + v + '  (set in .env or in the environment)');
+    console.error('\n  Copy .env.example to .env and fill in the values, or edit start-event.bat.\n');
+    process.exit(1);
+  }
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const store = await createStore();
   const st = await store.load();
