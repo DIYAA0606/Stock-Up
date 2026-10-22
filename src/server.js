@@ -245,7 +245,7 @@ export function createRequestHandler(store) {
           const allowed = new Set(coord.assignedTeams);
           teams = st.teams.filter((t) => allowed.has(t.id));
         } else {
-          teams = st.teams;
+          teams = [];
         }
       }
 
@@ -262,10 +262,8 @@ export function createRequestHandler(store) {
       if (payload.role === 'coordinator' && payload.coordId !== 'legacy') {
         const coord = await store.getCoordinator(payload.coordId);
         if (coord && !coord.enabled) throw new app.HttpError(403, 'Coordinator account disabled');
-        if (coord && coord.assignedTeams && coord.assignedTeams.length > 0) {
-          if (!coord.assignedTeams.includes(b.teamId)) {
-            throw new app.HttpError(403, 'You are not assigned to this team');
-          }
+        if (!coord || !coord.assignedTeams || !coord.assignedTeams.includes(b.teamId)) {
+          throw new app.HttpError(403, 'You are not assigned to this team');
         }
       }
 
@@ -303,10 +301,8 @@ export function createRequestHandler(store) {
       if (payload.role === 'coordinator' && payload.coordId !== 'legacy') {
         const coord = await store.getCoordinator(payload.coordId);
         if (coord && !coord.enabled) throw new app.HttpError(403, 'Coordinator account disabled');
-        if (coord && coord.assignedTeams && coord.assignedTeams.length > 0) {
-          if (!coord.assignedTeams.includes(b.teamId)) {
-            throw new app.HttpError(403, 'You are not assigned to this team');
-          }
+        if (!coord || !coord.assignedTeams || !coord.assignedTeams.includes(b.teamId)) {
+          throw new app.HttpError(403, 'You are not assigned to this team');
         }
       }
 
@@ -339,6 +335,9 @@ export function createRequestHandler(store) {
 
       // GET routes
       if (m === 'GET') {
+        if (route === 'board') {
+          return json(res, 200, app.buildBoard(st, { full: true, admin: true }));
+        }
         if (route === 'state') {
           const coords = await store.getCoordinators();
           return json(res, 200, {
@@ -361,7 +360,10 @@ export function createRequestHandler(store) {
         if (route === 'coordinators') {
           const coords = await store.getCoordinators();
           return json(res, 200, {
-            coordinators: coords.map(({ pinHash, ...rest }) => rest),
+            coordinators: coords.map(({ pinHash, ...rest }) => ({
+              ...rest,
+              pin: rest.pinPlain || '',
+            })),
           });
         }
       }

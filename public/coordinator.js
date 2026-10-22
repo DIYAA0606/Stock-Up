@@ -28,6 +28,19 @@ function draftFromTeam() {
 
 function shell() {
   const coordCode = getCoordId();
+  if (ctx.noTeamAssigned || !ctx.teams || ctx.teams.length === 0) {
+    root.innerHTML = `<div class="shell" style="max-width:560px;margin:50px auto;text-align:center;">
+      <div class="panel stack" style="padding:32px;">
+        <h2 style="margin:0 0 16px 0;">Coordinator Portal</h2>
+        <div class="note warn" style="font-size:1.15rem;padding:24px;border-radius:8px;">No team assigned, contact the organizer</div>
+        <div style="margin-top:20px;">
+          <button class="btn dark" id="logoutBtn">Log out</button>
+        </div>
+      </div>
+    </div>`;
+    $('#logoutBtn').addEventListener('click', () => { clearToken(); location.reload(); });
+    return;
+  }
   root.innerHTML = `<div class="shell">
     <div class="bar">
       <div>
@@ -153,7 +166,42 @@ function renderForm() {
         <button class="btn ghost" id="clear" ${dis}>Clear</button>
         <button class="btn" id="review" ${dis}>Review chit</button>
       </div>
-    </div>`;
+    </div>
+    ${t.results && t.results.length ? `
+    <div style="margin-top:24px;border-top:1px solid var(--line);padding-top:16px;">
+      <h3 style="margin:0 0 12px 0;">Quarter Results for ${esc(t.name)}</h3>
+      ${t.results.map((r) => `
+        <div style="background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px;">
+          <div class="inline" style="justify-content:space-between;margin-bottom:8px;">
+            <b>Quarter ${r.quarter}${r.roundName ? `: ${esc(r.roundName)}` : ''}</b>
+            <span class="pill" style="background:#123a17;color:#9be59b">Closing NAV: ${fmt(r.newNav)} Cr</span>
+          </div>
+          <table class="grid" style="width:100%;font-size:13px;margin-bottom:8px;">
+            <thead>
+              <tr><th>Stock</th><th class="num">Allocated</th><th class="num">Change %</th><th class="num">Exit Value</th></tr>
+            </thead>
+            <tbody>
+              ${r.stocks.map((s) => `
+                <tr>
+                  <td>${esc(s.name)}</td>
+                  <td class="num">${fmt(s.allocated)} Cr</td>
+                  <td class="num" style="color:${s.changePct >= 0 ? '#4ade80' : '#f87171'}">${s.changePct > 0 ? '+' : ''}${s.changePct}%</td>
+                  <td class="num"><b>${fmt(s.exitValue)} Cr</b></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+          <div class="summary num" style="font-size:12px;display:flex;gap:12px;flex-wrap:wrap;">
+            <div><span class="muted">Rumor fees:</span> ${fmt(r.rumorFees)} Cr</div>
+            <div><span class="muted">Cash left:</span> ${fmt(r.cash)} Cr</div>
+            <div><span class="muted">Stocks:</span> ${r.distinctCount}</div>
+            <div><span class="muted">Penalty:</span> <span style="color:${r.penalized ? '#f87171' : 'inherit'}">${r.penalized ? `-${fmt(r.penalty)} Cr` : 'None'}</span></div>
+            <div><span class="muted">NAV:</span> <b>${fmt(r.newNav)} Cr</b></div>
+            <div><span class="muted">Next Q Cash:</span> <b>${fmt(r.nextQuarterCash)} Cr</b></div>
+          </div>
+        </div>
+      `).join('')}
+    </div>` : ''}`;
 
   $('#buyRumorBtn')?.addEventListener('click', async () => {
     if (!confirm(`Buy a rumor for ${t.name}?\n\nThis will immediately and permanently deduct 5 Cr from this quarter's available cash (sunk cost).`)) return;

@@ -97,7 +97,7 @@ export function computeFor(st, team, upTo, returns) {
 const pct = (a, b) => (b === 0n ? null : Number(((a - b) * 100000n) / b) / 1000);
 
 // ---------- public board ----------
-export function buildBoard(st, { full = false } = {}) {
+export function buildBoard(st, { full = false, admin = false } = {}) {
   const R = st.settings.rounds || 4;
   const c = current(st);
   const rev = revealedThrough(st);
@@ -152,6 +152,14 @@ export function buildBoard(st, { full = false } = {}) {
   });
   teams.sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name));
 
+  const hideStandings = !admin && rev >= 3 && c.phase !== 'final';
+  if (hideStandings) {
+    teams = rows.map(({ team }) => ({
+      id: team.id,
+      name: team.name,
+    }));
+  }
+
   if (!full && c.phase === 'final') {
     const hiddenCount = Math.max(0, teams.length - st.finalReveal);
     teams = teams.map((t, i) => (i < hiddenCount ? { hidden: true, position: i + 1 } : t));
@@ -169,8 +177,10 @@ export function buildBoard(st, { full = false } = {}) {
     phaseEndsAt: st.phaseEndsAt,
     serverNow: Date.now(),
     finalReveal: st.finalReveal,
+    standingsHidden: hideStandings,
+    standingsMessage: hideStandings ? 'Standings hidden until final reveal' : null,
     teams,
-    companies: st.companies.map((co) => ({ id: co.id, name: co.name, growth: full ? co.returns : co.returns.slice(0, rev) })),
+    companies: st.companies.map((co) => ({ id: co.id, name: co.name, growth: (full || admin) ? co.returns : co.returns.slice(0, rev) })),
     news: c.phase === 'final' ? [] : st.news[c.round] || [],
   };
 }
@@ -184,10 +194,67 @@ export function entryContext(st, role, requestedRound, teamsOverride = null) {
   const returns = buildReturns(st.companies, st.settings.rounds || 4);
   const writable = role === 'admin' ? true : round === c.round && (c.phase === 'investing' || c.phase === 'entry');
   const srcTeams = teamsOverride !== null ? teamsOverride : st.teams;
+
+  if (role === 'coordinator' && srcTeams.length === 0) {
+    return {
+      phase: c.phase,
+      round: c.round,
+      roundName: ROUND_NAMES[c.round] || '',
+      selectedRound: round,
+      label: phaseLabel(c.round, c.phase),
+      writable: false,
+      role,
+      noTeamAssigned: true,
+      message: 'No team assigned, contact the organizer',
+      companies: [],
+      teams: [],
+      minPerStock: st.settings.minPerStock || '1',
+      rumorFee: st.settings.rumorFee || '5',
+      penaltyPercent: st.settings.penaltyPercent !== undefined ? st.settings.penaltyPercent : 15,
+    };
+  }
+
+  const rev = revealedThrough(st);
   const teams = srcTeams.map((t) => {
     const comp = computeFor(st, t, st.settings.rounds || 4, returns);
     const row = comp.rounds[round - 1];
     const alloc = (st.allocations[t.id] || {})[round];
+
+    const results = comp.rounds.slice(0, rev).map((rRow, idx) => {
+      const rNum = idx + 1;
+      const rAlloc = (st.allocations[t.id] || {})[rNum];
+      const stocks = st.companies.map((co) => {
+        const allocated = rAlloc && rAlloc.amounts && rAlloc.amounts[co.id] ? rAlloc.amounts[co.id] : '0';
+        const gPct = co.growth && co.growth[idx] !== undefined ? co.growth[idx] : 0;
+        const allocU = toUnits(allocated);
+        const growthUnits = BigInt(Math.round(gPct * 10000));
+        const delta = (allocU * growthUnits) / 1000000n;
+        const exitU = allocU + delta;
+        return {
+          companyId: co.id,
+          name: co.name,
+          allocated,
+          changePct: gPct,
+          exitValue: fromUnits(exitU < 0n ? 0n : exitU),
+        };
+      }).filter((s) => Number(s.allocated) > 0);
+
+      return {
+        quarter: rNum,
+        roundName: ROUND_NAMES[rNum] || '',
+        stocks,
+        rumorCount: rRow.rumorCount,
+        rumorFees: fromUnits(rRow.rumorFees),
+        cash: fromUnits(rRow.cash),
+        distinctCount: rRow.distinctCount,
+        penalized: rRow.penalized,
+        penalty: rRow.penalty !== null ? fromUnits(rRow.penalty) : '0',
+        navBeforePenalty: rRow.navBeforePenalty !== null ? fromUnits(rRow.navBeforePenalty) : fromUnits(rRow.capitalEnd),
+        newNav: fromUnits(rRow.capitalEnd),
+        nextQuarterCash: fromUnits(rRow.capitalEnd),
+      };
+    });
+
     return {
       id: t.id,
       name: t.name,
@@ -198,6 +265,7 @@ export function entryContext(st, role, requestedRound, teamsOverride = null) {
       investableCash: fromUnits(row.investableCash),
       distinctCount: row.distinctCount,
       amounts: alloc ? alloc.amounts : {},
+      results,
     };
   });
   return {
@@ -529,10 +597,18 @@ export function adminState(st, coordinators = []) {
   for (const cd of coordinators) {
     for (const tid of cd.assignedTeams || []) coordByTeam.set(tid, cd.code);
   }
-  const teamsWithCoord = board.teams.map((t) => ({
-    ...t,
-    coordinator: coordByTeam.get(t.id) || 'Unassigned',
-  }));
+  const teamsWithCoord = board.teams.map((t) => {
+    const rAlloc = (st.allocations[t.id] || {})[c.round];
+    const rRow = t.rounds && t.rounds[c.round - 1];
+    return {
+      ...t,
+      coordinator: coordByTeam.get(t.id) || 'Unassigned',
+      submitted: !!rAlloc,
+      allocated: rRow ? rRow.invested : '0',
+      cashLeft: rRow ? rRow.cash : t.worth,
+      lastNav: t.worth,
+    };
+  });
 
   return {
     ...board,

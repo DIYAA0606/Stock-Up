@@ -91,7 +91,43 @@ function control(el) {
       <hr style="border:0;border-top:1px solid var(--line);width:100%">
       ${S.pins ? `<div class="muted">Coordinator PIN <b class="num" style="color:var(--text)">${esc(S.pins.coordinator)}</b> · Admin PIN <b class="num" style="color:var(--text)">${esc(S.pins.admin)}</b></div>` : '<div class="muted">Coordinators have individual credentials in the <b>Coordinators</b> tab.</div>'}
       <div class="muted">${S.teams.length} teams · ${S.companies.length} stocks</div>
-    </div></div>`;
+    </div></div>
+    <div class="panel stack" style="margin-top:16px; overflow-x:auto;">
+      <div class="inline" style="justify-content:space-between">
+        <b>Quarter ${S.round} Team Status (${S.teams.filter(t => t.submitted).length}/${S.teams.length} submitted)</b>
+        <span class="muted">Live status — red rows have not submitted yet</span>
+      </div>
+      <table class="grid" style="width:100%; border-collapse:collapse; margin-top:8px;">
+        <thead>
+          <tr style="text-align:left; border-bottom:1px solid var(--line);">
+            <th>Team</th>
+            <th>Coordinator</th>
+            <th>Status</th>
+            <th class="num">Rumors</th>
+            <th class="num">Allocated</th>
+            <th class="num">Cash Left</th>
+            <th class="num">Distinct Stocks</th>
+            <th class="num">Last NAV</th>
+            <th>Penalty</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${S.teams.map(t => `
+            <tr style="border-bottom:1px solid var(--line);${!t.submitted ? 'background:rgba(220, 38, 38, 0.15);' : ''}">
+              <td style="padding:6px 8px;"><b>${esc(t.name)}</b></td>
+              <td style="padding:6px 8px;"><span class="pill">${esc(t.coordinator || '-')}</span></td>
+              <td style="padding:6px 8px;">${t.submitted ? '<span class="pill" style="background:#123a17;color:#9be59b">Submitted</span>' : '<span class="pill" style="background:#4a1212;color:#fca5a5;font-weight:700">NOT SUBMITTED</span>'}</td>
+              <td class="num" style="padding:6px 8px;">${t.rumorCount || 0}</td>
+              <td class="num" style="padding:6px 8px;">${t.allocated || '0'} Cr</td>
+              <td class="num" style="padding:6px 8px;">${t.cashLeft || t.worth} Cr</td>
+              <td class="num" style="padding:6px 8px;">${t.distinctCount || 0}</td>
+              <td class="num" style="padding:6px 8px;"><b>${t.lastNav || t.worth} Cr</b></td>
+              <td style="padding:6px 8px;">${t.penalized ? '<span class="pill" style="background:#4a1212;color:#fca5a5">15% Penalty</span>' : '<span class="muted">No</span>'}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>`;
   $('#back').addEventListener('click', () => act('back', {}));
   $('#adv').addEventListener('click', async () => {
     try {
@@ -134,6 +170,7 @@ async function coordinators(el) {
         <button class="btn" id="genCoordsBtn">Generate coordinators</button>
         <button class="btn dark" id="autoAssignBtn" ${coords.length && S.teams.length ? '' : 'disabled'}>Auto-assign teams evenly</button>
         <button class="btn ghost" id="printSlipsBtn" ${coords.length ? '' : 'disabled'}>Print credential slips</button>
+        <a href="/api/admin/coordinators.csv" class="btn dark" download="coordinators.csv" style="text-decoration:none;display:inline-flex;align-items:center;">Download CSV</a>
       </div>
     </div>
 
@@ -147,6 +184,7 @@ async function coordinators(el) {
         <thead>
           <tr>
             <th style="text-align:left">Code</th>
+            <th style="text-align:left">PIN</th>
             <th>Status</th>
             <th style="text-align:left">Assigned Teams (${S.teams.length} total)</th>
             <th style="text-align:right">Actions</th>
@@ -156,6 +194,7 @@ async function coordinators(el) {
           ${coords.map(c => `
             <tr>
               <td style="font-weight:700">${esc(c.code)}</td>
+              <td style="font-family:monospace;font-weight:700">${esc(c.pin || '******')}</td>
               <td><span class="badge ${c.enabled ? 'open' : 'closed'}">${c.enabled ? 'Active' : 'Disabled'}</span></td>
               <td style="text-align:left">
                 ${(c.assignedTeams && c.assignedTeams.length)

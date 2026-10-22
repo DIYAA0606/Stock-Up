@@ -290,12 +290,26 @@ test('Full 4-quarter event with 8 teams matches an independent calculation', asy
     pub = (await call('GET', '/api/board')).data;
     assert.equal(pub.phase, 'revealed');
     assert.equal(pub.companies[0].growth.length, round);
-    for (const t of pub.teams) {
-      assert.ok(Math.abs(Number(t.worth) - model[t.name]) < 0.02, `${t.name} round ${round}: ${t.worth} vs ${model[t.name]}`);
+    if (round <= 2) {
+      assert.equal(pub.standingsHidden, false);
+      for (const t of pub.teams) {
+        assert.ok(Math.abs(Number(t.worth) - model[t.name]) < 0.02, `${t.name} round ${round}: ${t.worth} vs ${model[t.name]}`);
+      }
+      const worths = pub.teams.map((t) => Number(t.worth));
+      assert.deepEqual(worths, [...worths].sort((a, b) => b - a));
+    } else {
+      // In Q3 and Q4, public board hides standings (no ranks, no worth, no history)
+      assert.equal(pub.standingsHidden, true);
+      assert.equal(pub.teams[0].worth, undefined);
+      assert.equal(pub.teams[0].rank, undefined);
+
+      // But admin board always has full standings
+      const admBoard = (await admin('GET', 'board')).data;
+      assert.equal(admBoard.standingsHidden, false);
+      for (const t of admBoard.teams) {
+        assert.ok(Math.abs(Number(t.worth) - model[t.name]) < 0.02, `${t.name} round ${round}: ${t.worth} vs ${model[t.name]}`);
+      }
     }
-    // leaderboard order is by worth, descending
-    const worths = pub.teams.map((t) => Number(t.worth));
-    assert.deepEqual(worths, [...worths].sort((a, b) => b - a));
     if (round < 4) await admin('POST', 'advance', {});
   }
 
@@ -316,4 +330,69 @@ test('Full 4-quarter event with 8 teams matches an independent calculation', asy
   const audit = (await admin('GET', 'audit')).data.lines;
   assert.ok(audit.some((l) => l.action === 'entry.set'));
   assert.ok(fs.readdirSync(store.backupDir).length >= 4, 'a backup is written at every reveal');
+});
+
+
+test('Coordinator access rules: cannot call admin routes, cannot access other teams, unassigned gets no data', async () => {
+  // Create an unassigned coordinator
+  const unassignedPin = '991122';
+  await store.setCoordinator({
+    id: 'coord-unassigned',
+    code: 'CUNASS',
+    pinHash: hashPin(unassignedPin),
+    pinPlain: unassignedPin,
+    assignedTeams: [],
+    enabled: true,
+    createdAt: Date.now(),
+  });
+
+  const unassignedLogin = await call('POST', '/api/auth/login', { body: { code: 'CUNASS', pin: unassignedPin } });
+  assert.equal(unassignedLogin.status, 200);
+  const unassignedToken = unassignedLogin.data.token;
+
+  // Unassigned coordinator receives no data and clear message
+  const unassignedCtx = await call('GET', '/api/coord/entry', { token: unassignedToken });
+  assert.equal(unassignedCtx.status, 200);
+  assert.equal(unassignedCtx.data.noTeamAssigned, true);
+  assert.equal(unassignedCtx.data.teams.length, 0);
+
+  // Unassigned coordinator cannot submit an entry
+  const unassignedSubmit = await call('POST', '/api/coord/entry', {
+    token: unassignedToken,
+    body: { teamId: 't1', round: 1, amounts: { c1: '10' } }
+  });
+  assert.equal(unassignedSubmit.status, 403);
+
+  // Assigned coordinator
+  const assignedPin = '334455';
+  await store.setCoordinator({
+    id: 'coord-assigned',
+    code: 'CASS',
+    pinHash: hashPin(assignedPin),
+    pinPlain: assignedPin,
+    assignedTeams: ['t-alpha'],
+    enabled: true,
+    createdAt: Date.now(),
+  });
+  const assignedLogin = await call('POST', '/api/auth/login', { body: { code: 'CASS', pin: assignedPin } });
+  const assignedToken = assignedLogin.data.token;
+
+  // Coordinator cannot call any /api/admin/* route
+  assert.equal((await call('GET', '/api/admin/state', { token: assignedToken })).status, 403);
+  assert.equal((await call('GET', '/api/admin/board', { token: assignedToken })).status, 403);
+  assert.equal((await call('POST', '/api/admin/advance', { token: assignedToken, body: {} })).status, 403);
+  assert.equal((await call('GET', '/api/admin/coordinators', { token: assignedToken })).status, 403);
+
+  // Coordinator cannot write to unassigned team
+  const crossTeamEntry = await call('POST', '/api/coord/entry', {
+    token: assignedToken,
+    body: { teamId: 't-beta', round: 1, amounts: { c1: '10' } }
+  });
+  assert.equal(crossTeamEntry.status, 403);
+
+  const crossTeamRumor = await call('POST', '/api/coord/rumor', {
+    token: assignedToken,
+    body: { teamId: 't-beta', round: 1 }
+  });
+  assert.equal(crossTeamRumor.status, 403);
 });
