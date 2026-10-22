@@ -1,9 +1,9 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Guess the Growth – Admin</title>
+<title>Guess the Growth — Admin</title>
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -75,7 +75,7 @@ function control(el) {
     <div class="panel stack">
       <div class="muted">Now showing on the projector</div>
       <div class="step-now">${esc(S.label)}</div>
-      <div class="muted">${S.phase === 'final' ? 'Final' : `Round ${S.round} of ${S.rounds}`} · step ${S.step + 1} of ${S.totalSteps} · <b class="num" id="clk"></b></div>
+      <div class="muted">${S.phase === 'final' ? 'Final' : `Quarter ${S.round} of ${S.rounds}${S.roundName ? ` (${esc(S.roundName)})` : ''}`} · step ${S.step + 1} of ${S.totalSteps} · <b class="num" id="clk"></b></div>
       <div class="inline">
         <button class="btn ghost" id="back" ${S.step === 0 ? 'disabled' : ''}>Back one step</button>
         <button class="btn" id="adv" ${last ? 'disabled' : ''}>${last ? 'At the end' : `Next: ${esc(S.nextLabel)}`}</button>
@@ -84,13 +84,13 @@ function control(el) {
       ${S.phase === 'final' ? `<div class="inline"><button class="btn" id="fnext">Reveal next team</button><button class="btn dark" id="fall">Reveal all</button><button class="btn ghost" id="freset">Hide all</button></div>` : ''}
     </div>
     <div class="panel stack">
-      <div><b>Chits for round ${S.round}</b></div>
+      <div><b>Chits for Quarter ${S.round}${S.roundName ? ` (${esc(S.roundName)})` : ''}</b></div>
       ${inEntry
         ? (S.missing.length ? `<div class="note warn">${S.missing.length} still missing:</div><div>${S.missing.map((n) => `<span class="pill">${esc(n)}</span>`).join('')}</div>` : '<div class="note" style="background:#123a17;color:#9be59b">All teams have a chit.</div>')
         : '<div class="muted">Shown during the investment window and capital update.</div>'}
       <hr style="border:0;border-top:1px solid var(--line);width:100%">
       ${S.pins ? `<div class="muted">Coordinator PIN <b class="num" style="color:var(--text)">${esc(S.pins.coordinator)}</b> · Admin PIN <b class="num" style="color:var(--text)">${esc(S.pins.admin)}</b></div>` : '<div class="muted">Coordinators have individual credentials in the <b>Coordinators</b> tab.</div>'}
-      <div class="muted">${S.teams.length} teams · ${S.companies.length} companies</div>
+      <div class="muted">${S.teams.length} teams · ${S.companies.length} stocks</div>
     </div></div>`;
   $('#back').addEventListener('click', () => act('back', {}));
   $('#adv').addEventListener('click', async () => {
@@ -129,7 +129,7 @@ async function coordinators(el) {
       <div class="muted">Each coordinator receives a code (e.g. C01) and a private 6-digit PIN. When logged in at <code>/coordinator.html</code>, they only see and enter chits for their assigned teams.</div>
       <div class="inline" style="gap:12px">
         <label class="inline" style="margin:0;color:var(--text)">Bulk generate:
-          <input id="coordCount" type="number" min="1" max="100" value="30" style="width:70px;margin-left:6px">
+          <input id="coordCount" type="number" min="1" max="100" value="20" style="width:70px;margin-left:6px">
         </label>
         <button class="btn" id="genCoordsBtn">Generate coordinators</button>
         <button class="btn dark" id="autoAssignBtn" ${coords.length && S.teams.length ? '' : 'disabled'}>Auto-assign teams evenly</button>
@@ -252,62 +252,10 @@ async function coordinators(el) {
   }
 }
 
-function showSlipsModal(title, createdList, teamMap) {
-  const box = $('#modalBox');
-  box.innerHTML = `<div class="modal-bg"><div class="modal" role="dialog" aria-modal="true" style="max-width:640px;max-height:85vh;overflow:auto">
-    <h2>${esc(title)}</h2>
-    <div class="note warn">Make sure to save or distribute these PINs now. For security, PINs are hashed on the server and cannot be viewed again.</div>
-    <table class="t num" style="margin:16px 0">
-      <thead><tr><th style="text-align:left">Coordinator Code</th><th>PIN</th><th style="text-align:left">Login URL</th></tr></thead>
-      <tbody>
-        ${createdList.map(c => `<tr><td style="text-align:left"><b>${esc(c.code)}</b></td><td><code style="font-size:16px;color:var(--text)">${esc(c.pin)}</code></td><td style="text-align:left">/coordinator.html</td></tr>`).join('')}
-      </tbody>
-    </table>
-    <div class="inline" style="justify-content:flex-end">
-      <button class="btn" id="closeSlips">Done</button>
-    </div>
-  </div></div>`;
-  $('#closeSlips').addEventListener('click', () => { box.innerHTML = ''; });
-}
-
-function showPrintView(coords, teamMap) {
-  const w = window.open('', '_blank');
-  if (!w) return toast('Popup blocked, please allow popups in your browser', 'err');
-  const origin = window.location.origin;
-  w.document.write(`<!doctype html><html><head><title>Coordinator Credential Slips</title>
-  <style>
-    body { font-family: system-ui, -apple-system, sans-serif; padding: 24px; color: #111; background: #fff; }
-    h1 { font-size: 22px; margin-top: 0; }
-    .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
-    .slip { border: 2px dashed #333; border-radius: 8px; padding: 16px; page-break-inside: avoid; }
-    .title { font-size: 16px; font-weight: 800; margin-bottom: 8px; color: #b91c1c; }
-    .row { margin: 6px 0; font-size: 14px; }
-    .row b { font-size: 16px; }
-    .teams { font-size: 12px; color: #444; margin-top: 10px; line-height: 1.4; }
-    @media print { .no-print { display: none; } }
-  </style></head><body>
-  <div class="no-print" style="margin-bottom:20px;display:flex;gap:12px;align-items:center">
-    <button onclick="window.print()" style="padding:10px 20px;font-size:16px;font-weight:700;cursor:pointer;background:#b91c1c;color:#fff;border:0;border-radius:6px">Print All Slips</button>
-    <span>Distribute one slip to each coordinator.</span>
-  </div>
-  <div class="grid">
-    ${coords.map(c => `
-      <div class="slip">
-        <div class="title">Guess the Growth · Coordinator Access</div>
-        <div class="row">Coordinator Code: <b>${esc(c.code)}</b></div>
-        <div class="row">Portal URL: <b>${origin}/coordinator.html</b></div>
-        <div class="row">Status: <b>${c.enabled ? 'Active' : 'Disabled'}</b></div>
-        <div class="teams">Assigned Teams: <b>${(c.assignedTeams || []).map(tid => esc(teamMap.get(tid) || tid)).join(', ') || 'None assigned yet'}</b></div>
-      </div>
-    `).join('')}
-  </div></body></html>`);
-  w.document.close();
-}
-
 function showAssignModal(coord, allTeams, parentEl) {
   const box = $('#modalBox');
   const assigned = new Set(coord.assignedTeams || []);
-  box.innerHTML = `<div class="modal-bg"><div class="modal" role="dialog" aria-modal="true" style="max-width:540px;max-height:85vh;overflow:auto">
+  box.innerHTML = `<div class="modal-bg"><div class="modal" role="dialog" aria-modal="true" style="max-width:540px">
     <h2>Assign teams to ${esc(coord.code)}</h2>
     <div class="inline" style="gap:8px;margin-bottom:12px">
       <button class="btn small ghost" id="selAll">Select all</button>
@@ -351,6 +299,58 @@ function showAssignModal(coord, allTeams, parentEl) {
   });
 }
 
+function showSlipsModal(title, createdList, teamMap) {
+  const box = $('#modalBox');
+  box.innerHTML = `<div class="modal-bg"><div class="modal" role="dialog" aria-modal="true" style="max-width:640px;max-height:85vh;overflow:auto">
+    <h2>${esc(title)}</h2>
+    <div class="note warn">Make sure to save or distribute these PINs now. For security, PINs are hashed on the server and cannot be viewed again.</div>
+    <table class="t num" style="margin:16px 0">
+      <thead><tr><th style="text-align:left">Coordinator Code</th><th>PIN</th><th style="text-align:left">Login URL</th></tr></thead>
+      <tbody>
+        ${createdList.map(c => `<tr><td style="text-align:left"><b>${esc(c.code)}</b></td><td><code style="font-size:16px;color:var(--text)">${esc(c.pin)}</code></td><td style="text-align:left">/coordinator.html</td></tr>`).join('')}
+      </tbody>
+    </table>
+    <div class="inline" style="justify-content:flex-end">
+      <button class="btn" id="closeSlips">Done</button>
+    </div>
+  </div></div>`;
+  $('#closeSlips').addEventListener('click', () => { box.innerHTML = ''; });
+}
+
+function showPrintView(coords, teamMap) {
+  const w = window.open('', '_blank');
+  if (!w) return toast('Popup blocked, please allow popups in your browser', 'err');
+  const origin = window.location.origin;
+  w.document.write(`<!doctype html><html><head><title>Coordinator Credential Slips</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; padding: 24px; color: #111; background: #fff; }
+    h1 { font-size: 22px; margin-top: 0; }
+    .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+    .slip { border: 2px dashed #333; border-radius: 8px; padding: 16px; page-break-inside: avoid; }
+    .title { font-size: 16px; font-weight: 800; margin-bottom: 8px; color: #b91c1c; }
+    .row { margin: 6px 0; font-size: 14px; }
+    .row b { font-size: 16px; }
+    .teams { font-size: 12px; color: #444; margin-top: 10px; line-height: 1.4; }
+    @media print { .no-print { display: none; } }
+  </style></head><body>
+  <div class="no-print" style="margin-bottom:20px;display:flex;gap:12px;align-items:center">
+    <button onclick="window.print()" style="padding:10px 20px;font-size:16px;font-weight:700;cursor:pointer;background:#b91c1c;color:#fff;border:0;border-radius:6px">Print All Slips</button>
+    <span>Distribute one slip to each coordinator.</span>
+  </div>
+  <div class="grid">
+    ${coords.map(c => `
+      <div class="slip">
+        <div class="title">Guess the Growth — Coordinator Access</div>
+        <div class="row">Coordinator Code: <b>${esc(c.code)}</b></div>
+        <div class="row">Portal URL: <b>${origin}/coordinator.html</b></div>
+        <div class="row">Status: <b>${c.enabled ? 'Active' : 'Disabled'}</b></div>
+        <div class="teams">Assigned Teams: <b>${(c.assignedTeams || []).map(tid => esc(teamMap.get(tid) || tid)).join(', ') || 'None assigned yet'}</b></div>
+      </div>
+    `).join('')}
+  </div></body></html>`);
+  w.document.close();
+}
+
 // ---------------- teams ----------------
 function teams(el) {
   el.innerHTML = `<div class="cols"><div class="panel stack"><b>Add teams</b>
@@ -368,25 +368,30 @@ function teams(el) {
 function news(el) {
   const items = S.newsByRound[newsRound] || [];
   const rows = [0, 1, 2, 3, 4, 5].map((i) => `<div class="stack" style="padding:10px 0;border-bottom:1px solid var(--line)"><div><label for="h${i}">Headline ${i + 1}</label><input id="h${i}" type="text" value="${esc(items[i]?.headline || '')}"></div><div><label for="b${i}">Story</label><textarea id="b${i}" style="min-height:70px;font-family:inherit;font-size:15px">${esc(items[i]?.body || '')}</textarea></div></div>`).join('');
-  el.innerHTML = `<div class="panel stack" style="max-width:760px"><div class="inline"><label for="nr" style="margin:0">Round</label><select id="nr" style="width:auto">${Array.from({ length: S.rounds }, (_, i) => `<option value="${i + 1}" ${i + 1 === newsRound ? 'selected' : ''}>${i + 1}</option>`).join('')}</select></div>
-    ${rows}<button class="btn" id="saveN">Save news for round ${newsRound}</button><div class="muted">News is shown on the projector during the News Burst and stays up through the investment window. Up to 6 headlines per round.</div></div>`;
+  el.innerHTML = `<div class="panel stack" style="max-width:760px"><div class="inline"><label for="nr" style="margin:0">Quarter</label><select id="nr" style="width:auto">${Array.from({ length: S.rounds }, (_, i) => `<option value="${i + 1}" ${i + 1 === newsRound ? 'selected' : ''}>${i + 1}</option>`).join('')}</select></div>
+    ${rows}<button class="btn" id="saveN">Save news for quarter ${newsRound}</button><div class="muted">News is shown on the projector during the News Burst and stays up through the investment window. Up to 6 headlines per quarter.</div></div>`;
   $('#nr').addEventListener('change', (e) => { newsRound = Number(e.target.value); news($('#body')); });
   $('#saveN').addEventListener('click', () => act('news', { round: newsRound, items: [0, 1, 2, 3, 4, 5].map((i) => ({ headline: $('#h' + i).value, body: $('#b' + i).value })) }, 'News saved'));
 }
 
 // ---------------- growth data ----------------
 function data(el) {
-  const tsv = ['Company', ...Array.from({ length: S.rounds }, (_, i) => 'Q' + (i + 1))].join('\t') + '\n' + S.companies.map((c) => [c.name, ...c.growth].join('\t')).join('\n');
-  el.innerHTML = `<div class="stack"><div class="panel stack"><b>Growth per company per quarter</b>
-    <div class="muted">Paste from your sheet (tab or comma separated). A plain number is a fraction: 0.18 means +18%. A cell with a % sign is a percentage: −6.00% means −6%. Values below −100% are treated as −100%.</div>
+  const tsv = ['Stock', ...Array.from({ length: S.rounds }, (_, i) => 'Q' + (i + 1))].join('\t') + '\n' + S.companies.map((c) => [c.name, ...c.growth].join('\t')).join('\n');
+  el.innerHTML = `<div class="stack"><div class="panel stack">
+    <div class="inline" style="align-items:center">
+      <b>Growth per stock per quarter (Percent Change)</b>
+      ${S.returnsIsSample ? '<span class="badge closed" style="background:#b91c1c;color:#fff;font-weight:700;margin-left:8px">SAMPLE DATA</span>' : '<span class="badge open" style="margin-left:8px">OFFICIAL DATA</span>'}
+    </div>
+    ${S.returnsWarnings && S.returnsWarnings.length ? `<div class="note warn"><b>Returns Matrix Warnings:</b><br>${S.returnsWarnings.map(w => esc(w)).join('<br>')}</div>` : ''}
+    <div class="muted">Paste from your sheet (tab or comma separated). Values are percentages (e.g. 18 means +18%, -45 means -45%, 4.2 means +4.2%). Blank cells default to 0%. Values below -100% are clamped to -100%.</div>
     <textarea id="csv" style="min-height:220px" spellcheck="false">${esc(tsv)}</textarea>
     <div class="inline"><button class="btn" id="saveD">Save growth data</button><span class="muted" id="dmsg"></span></div>
-    <div class="muted">A company that already has money invested in it cannot be removed.</div></div>
-    <div class="panel" style="overflow:auto"><table class="t num"><tr><th>Company</th>${Array.from({ length: S.rounds }, (_, i) => `<th>Q${i + 1}</th>`).join('')}</tr>
+    <div class="muted">A stock that already has money invested in it cannot be removed.</div></div>
+    <div class="panel" style="overflow:auto"><table class="t num"><tr><th>Stock</th>${Array.from({ length: S.rounds }, (_, i) => `<th>Q${i + 1}</th>`).join('')}</tr>
     ${S.companies.map((c) => `<tr><td>${esc(c.name)}</td>${c.growth.map((g) => `<td class="${Number(g) < 0 ? 'down' : 'up'}">${pctText(g)}</td>`).join('')}</tr>`).join('')}</table></div></div>`;
   $('#saveD').addEventListener('click', async () => {
-    const ok = await act('returns', { csv: $('#csv').value }, 'Growth data saved');
-    if (ok) data($('#body'));
+    const res = await act('returns', { csv: $('#csv').value }, 'Growth data saved');
+    if (res) data($('#body'));
   });
 }
 
@@ -394,9 +399,11 @@ function data(el) {
 function standings(el) {
   const R = S.revealedThrough;
   el.innerHTML = `<div class="panel stack" style="overflow:auto"><div class="inline" style="justify-content:space-between"><b>${R ? `Standings after Quarter ${R}` : 'No results revealed yet'}</b><button class="btn dark small" id="csvBtn">Download CSV</button></div>
-    <table class="t num"><tr><th>Team</th><th>Rank</th><th>Worth (Cr)</th>${Array.from({ length: S.rounds }, (_, i) => `<th>R${i + 1} chit</th>`).join('')}</tr>
-    ${S.teams.map((t) => `<tr><td>${esc(t.name)}</td><td>${t.rank}</td><td><b>${fmt(t.worth)}</b></td>${t.rounds.map((r) => `<td title="${r.entered ? `start ${fmt(r.capitalStart)} · invested ${fmt(r.invested)} · cash ${fmt(r.cash)} · exit ${fmt(r.exitTotal)} · end ${fmt(r.capitalEnd)}` : 'no chit'}">${r.entered ? `${fmt(r.invested)}${r.capitalEnd !== null ? ` → ${fmt(r.capitalEnd)}` : ''}` : '<span class="muted">–</span>'}</td>`).join('')}</tr>`).join('')}</table>
-    <div class="muted">Each round cell shows the amount invested and, once revealed, the team's capital at the end of that round. Hover for the full breakdown.</div></div>`;
+    <table class="t num"><thead><tr><th>Team</th><th>Coordinator</th><th>Rank</th><th>NAV (Cr)</th>${Array.from({ length: S.rounds }, (_, i) => `<th>Q${i + 1} Chit & NAV</th>`).join('')}</tr></thead>
+    <tbody>
+    ${S.teams.map((t) => `<tr><td>${esc(t.name)}</td><td><span class="pill">${esc(t.coordinator || '—')}</span></td><td>${t.rank}</td><td><b>${fmt(t.worth)}</b></td>${t.rounds.map((r) => `<td title="${r.entered || r.rumorCount ? `start: ${fmt(r.capitalStart)}, invested: ${fmt(r.invested)}, rumors: ${r.rumorCount} (${fmt(r.rumorFees)} Cr), cash: ${fmt(r.cash)}, exit: ${fmt(r.exitTotal)}, penalty: ${fmt(r.penalty)}, end: ${fmt(r.capitalEnd)}` : 'no chit'}">${r.entered || r.rumorCount ? `${fmt(r.invested)}${r.rumorCount ? ` <small class="muted">(${r.rumorCount}r)</small>` : ''}${r.penalized ? '<span style="color:#ff8585"> ⚠️</span>' : ''}${r.capitalEnd !== null ? ` → <b>${fmt(r.capitalEnd)}</b>` : ''}` : '<span class="muted">–</span>'}</td>`).join('')}</tr>`).join('')}
+    </tbody></table>
+    <div class="muted">Each quarter cell shows investment amount, rumor purchases, penalty warnings, and closing NAV. Hover for full breakdown.</div></div>`;
   $('#csvBtn').addEventListener('click', async () => {
     const token = getToken();
     const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
@@ -414,19 +421,36 @@ async function safety(el) {
   let audit = [];
   try { audit = (await api('/api/admin/audit')).lines.slice(0, 25); } catch {}
   el.innerHTML = `<div class="cols">
-    <div class="panel stack"><b>Settings</b>
+    <div class="panel stack"><b>Game Rules & Settings</b>
       <div><label for="sc">Starting capital (Cr)</label><input id="sc" type="text" value="${esc(S.settings.startingCapital)}"></div>
+      <div><label for="rf">Rumor fee per purchase (Cr)</label><input id="rf" type="text" value="${esc(S.settings.rumorFee || '5')}"></div>
+      <div><label for="mps">Minimum allocation per stock (Cr)</label><input id="mps" type="text" value="${esc(S.settings.minPerStock || '1')}"></div>
+      <div>
+        <label for="pm">Penalty mode (&lt;4 stocks held)</label>
+        <select id="pm">
+          <option value="every_quarter" ${S.settings.penaltyMode === 'every_quarter' ? 'selected' : ''}>every_quarter (apply 15% every quarter)</option>
+          <option value="final_only" ${S.settings.penaltyMode === 'final_only' ? 'selected' : ''}>final_only (apply 15% only at Q4 close)</option>
+        </select>
+      </div>
+      <div><label for="pp">Penalty percent (%)</label><input id="pp" type="number" min="0" max="100" value="${S.settings.penaltyPercent !== undefined ? S.settings.penaltyPercent : 15}"></div>
       <div class="inline">${[['info', 'Information (min)'], ['news', 'News (min)'], ['investing', 'Investing (min)'], ['entry', 'Capital update (min)']].map(([k, l]) => `<div style="flex:1;min-width:110px"><label for="d_${k}">${l}</label><input id="d_${k}" type="number" min="0" value="${d[k]}"></div>`).join('')}</div>
       <button class="btn" id="saveS">Save settings</button></div>
     <div class="panel stack"><b>Backups</b><div class="muted">A backup is saved automatically each time results are revealed and before any reset. State lives in <code>data/state.json</code>.</div>
       <button class="btn dark" id="bk">Save a backup now</button>
       <hr style="border:0;border-top:1px solid var(--line);width:100%">
-      <b>Reset after a dry run</b><div class="muted">Deletes every chit and goes back to the start. Growth data and news stay.</div>
+      <b>Reset after a dry run</b><div class="muted">Deletes every chit and rumor and goes back to start. Growth data stays.</div>
       <label class="inline" style="color:var(--text)"><input type="checkbox" id="ct" style="width:auto"> Also delete all teams</label>
       <div class="inline"><input id="rc" type="text" placeholder="Type RESET" style="max-width:150px"><button class="btn warn" id="rs">Reset event</button></div></div>
     <div class="panel stack" style="grid-column:1/-1"><b>Recent changes</b>
-      <table class="t"><tr><th>Time</th><th>Who</th><th>What</th></tr>${audit.map((l) => `<tr><td>${esc(new Date(l.at).toLocaleTimeString())}</td><td>${esc(l.who)}</td><td style="text-align:left">${esc(l.action)}${l.teamId ? ' · ' + esc((S.teams.find((t) => t.id === l.teamId) || {}).name || l.teamId) : ''}${l.round ? ' · round ' + esc(l.round) : ''}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">Nothing yet.</td></tr>'}</table></div></div>`;
-  $('#saveS').addEventListener('click', () => act('settings', { startingCapital: $('#sc').value, durations: Object.fromEntries(['info', 'news', 'investing', 'entry'].map((k) => [k, $('#d_' + k).value])) }, 'Settings saved'));
+      <table class="t"><tr><th>Time</th><th>Who</th><th>What</th></tr>${audit.map((l) => `<tr><td>${esc(new Date(l.at).toLocaleTimeString())}</td><td>${esc(l.who)}</td><td style="text-align:left">${esc(l.action)}${l.teamId ? ' · ' + esc((S.teams.find((t) => t.id === l.teamId) || {}).name || l.teamId) : ''}${l.round ? ' · quarter ' + esc(l.round) : ''}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">Nothing yet.</td></tr>'}</table></div></div>`;
+  $('#saveS').addEventListener('click', () => act('settings', {
+    startingCapital: $('#sc').value,
+    rumorFee: $('#rf').value,
+    minPerStock: $('#mps').value,
+    penaltyMode: $('#pm').value,
+    penaltyPercent: Number($('#pp').value),
+    durations: Object.fromEntries(['info', 'news', 'investing', 'entry'].map((k) => [k, $('#d_' + k).value]))
+  }, 'Settings saved'));
   $('#bk').addEventListener('click', () => act('backup', {}, 'Backup saved'));
   $('#rs').addEventListener('click', async () => {
     if (await act('reset', { confirm: $('#rc').value.trim(), clearTeams: $('#ct').checked }, 'Event reset')) tab = 'control', draw();

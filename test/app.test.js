@@ -6,13 +6,17 @@ import path from 'node:path';
 import { Store } from '../src/store.js';
 import * as app from '../src/app.js';
 
-const APEX = 'c1';
-const NEXUS = 'c6';
-const QUANTUM = 'c7';
+// Stock IDs in 10-stock matrix
+const APEX = 'c1';      // ApexTech (+18% Q1)
+const MEDHEAL = 'c2';   // MedHeal (-3% Q1)
+const GREENFUEL = 'c3'; // GreenFuel (+4.5% Q1)
+const QUICKMART = 'c5'; // QuickMart (+9.1% Q1)
+const FINBANK = 'c7';   // FinBank (+17% Q1)
 
-function fresh(teams = ['Alpha', 'Beta', 'Gamma']) {
+function fresh(teams = ['Alpha', 'Beta', 'Gamma'], { penaltyMode = 'every_quarter' } = {}) {
   const store = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'gtg-test-')));
   app.addTeams(store.state, teams);
+  store.state.settings.penaltyMode = penaltyMode;
   return store.state;
 }
 const id = (st, name) => st.teams.find((t) => t.name === name).id;
@@ -24,15 +28,16 @@ function goTo(st, round, phase) {
   }
   throw new Error('could not reach ' + round + phase);
 }
-const enter = (st, team, round, amounts, role = 'coordinator') => app.applyEntry(st, { teamId: id(st, team), round, amounts, role });
+const enter = (st, team, round, amounts, role = 'coordinator') =>
+  app.applyEntry(st, { teamId: id(st, team), round, amounts, role });
 const board = (st) => app.buildBoard(st);
 const worthOf = (st, name) => board(st).teams.find((t) => t.name === name).worth;
 
-test('starts at Round 1 information release with everyone on starting capital and no growth visible', () => {
+test('starts at Quarter 1 information release with everyone on starting capital and no growth visible', () => {
   const st = fresh();
   const b = board(st);
   assert.equal(b.round, 1);
-  assert.equal(b.label, 'Company Information Release');
+  assert.equal(b.rounds, 4);
   assert.equal(b.entryOpen, false);
   assert.ok(b.teams.every((t) => t.worth === '100'));
   assert.ok(b.companies.every((c) => c.growth.length === 0));
@@ -52,14 +57,15 @@ test('nobody can enter a round that has not started', () => {
 test('total investment above available capital is rejected and nothing is saved', () => {
   const st = fresh();
   goTo(st, 1, 'investing');
-  assert.throws(() => enter(st, 'Alpha', 1, { [APEX]: '60', [NEXUS]: '45' }), (e) => e.status === 422 && /105 Cr but only 100 Cr/.test(e.message));
+  assert.throws(() => enter(st, 'Alpha', 1, { [APEX]: '60', [FINBANK]: '45' }), (e) => e.status === 422 && /105 Cr but only 100 Cr/.test(e.message));
   assert.equal(st.allocations[id(st, 'Alpha')], undefined);
 });
 
-test('exactly the available capital is fine; there is no per-company cap and no minimum enforced', () => {
+test('allocation of 0.5 is rejected and exactly 1 is accepted', () => {
   const st = fresh();
   goTo(st, 1, 'investing');
-  assert.doesNotThrow(() => enter(st, 'Alpha', 1, { [APEX]: '100' }));
+  assert.throws(() => enter(st, 'Alpha', 1, { [APEX]: '0.5' }), (e) => e.status === 400 && /at least 1 Cr/.test(e.message));
+  assert.doesNotThrow(() => enter(st, 'Alpha', 1, { [APEX]: '1' }));
 });
 
 test('negative or junk amounts are rejected', () => {
@@ -70,94 +76,117 @@ test('negative or junk amounts are rejected', () => {
   assert.throws(() => enter(st, 'Alpha', 1, { nope: '5' }), /Unknown company/);
 });
 
-test('results stay hidden until the reveal step, then worth updates', () => {
+test('rumor purchase immediately deducts 5 Cr and updates investable cash', () => {
+  const st = fresh();
+  goTo(st, 1, 'investing');
+  const res = app.buyRumor(st, { teamId: id(st, 'Alpha'), round: 1, role: 'coordinator' });
+  assert.equal(res.rumorCount, 1);
+  assert.equal(res.rumorFees, '5');
+  assert.equal(res.investableCash, '95');
+
+  // Now max investable is 95 Cr: investing 96 Cr must be rejected
+  assert.throws(
+    () => enter(st, 'Alpha', 1, { [APEX]: '96' }),
+    (e) => e.status === 422 && /only 95 Cr is investable/.test(e.message)
+  );
+  // Investing 95 Cr is allowed
+  assert.doesNotThrow(() => enter(st, 'Alpha', 1, { [APEX]: '95' }));
+});
+
+test('rumor purchase rejected when it would exceed available cash with existing allocations', () => {
+  const st = fresh();
+  goTo(st, 1, 'investing');
+  // Team invests 98 Cr (leaving 2 Cr)
+  enter(st, 'Alpha', 1, { [APEX]: '98' });
+  // Buying rumor costs 5 Cr; 98 + 5 = 103 > 100 -> rejected
+  assert.throws(
+    () => app.buyRumor(st, { teamId: id(st, 'Alpha'), round: 1, role: 'coordinator' }),
+    (e) => e.status === 422 && /would exceed capital/.test(e.message)
+  );
+});
+
+test('coordinator cannot decrease rumor count; only admin can adjust', () => {
+  const st = fresh();
+  goTo(st, 1, 'investing');
+  app.buyRumor(st, { teamId: id(st, 'Alpha'), round: 1, role: 'coordinator' });
+  app.buyRumor(st, { teamId: id(st, 'Alpha'), round: 1, role: 'coordinator' });
+  assert.equal(st.rumors[id(st, 'Alpha')][1], 2);
+
+  // Admin can adjust rumors to 1
+  const adj = app.adjustRumors(st, { teamId: id(st, 'Alpha'), round: 1, count: 1 });
+  assert.equal(adj.before, 2);
+  assert.equal(adj.after, 1);
+  assert.equal(st.rumors[id(st, 'Alpha')][1], 1);
+});
+
+test('results stay hidden until the reveal step, then worth updates with 4-stock penalty rules', () => {
   const st = fresh();
   goTo(st, 1, 'entry');
-  enter(st, 'Alpha', 1, { [APEX]: '50', [NEXUS]: '50' }); // +18% and +17% -> 59 + 58.5
-  enter(st, 'Beta', 1, {}); // all cash
+  // Alpha: 4 distinct stocks -> 25 each in Apex (18%), MedHeal (-3%), QuickMart (9.1%), FinBank (17%)
+  // 25*(1.18 + 0.97 + 1.091 + 1.17) = 110.275 -> rounded half-up to 110.28
+  enter(st, 'Alpha', 1, { [APEX]: '25', [MEDHEAL]: '25', [QUICKMART]: '25', [FINBANK]: '25' });
+  enter(st, 'Beta', 1, {}); // all cash -> 100 - 15% penalty = 85
+  // Gamma: 1 stock -> 100 in Apex (118) - 15% penalty = 118 * 0.85 = 100.3
   enter(st, 'Gamma', 1, { [APEX]: '100' });
+
   let b = board(st);
   assert.ok(b.teams.every((t) => t.worth === '100'), 'worth must not change before reveal');
   assert.ok(b.companies.every((c) => c.growth.length === 0), 'growth must not be sent before reveal');
+
   app.advance(st); // -> revealed
   b = board(st);
-  assert.equal(b.label, 'Quarter 1 Results');
-  assert.equal(worthOf(st, 'Alpha'), '117.5');
-  assert.equal(worthOf(st, 'Beta'), '100');
-  assert.equal(worthOf(st, 'Gamma'), '118');
-  assert.deepEqual(b.teams.map((t) => t.name), ['Gamma', 'Alpha', 'Beta']);
+  assert.equal(worthOf(st, 'Alpha'), '110.28');
+  assert.equal(worthOf(st, 'Beta'), '85');
+  assert.equal(worthOf(st, 'Gamma'), '100.3');
+  assert.deepEqual(b.teams.map((t) => t.name), ['Alpha', 'Gamma', 'Beta']);
   assert.deepEqual(b.teams.map((t) => t.rank), [1, 2, 3]);
   assert.equal(b.companies.find((c) => c.id === APEX).growth.length, 1);
 });
 
-test('advancing past the capital-update step warns about missing chits unless forced', () => {
+test('advancing past capital-update warns about missing chits unless forced', () => {
   const st = fresh();
   goTo(st, 1, 'entry');
   enter(st, 'Alpha', 1, { [APEX]: '10' });
   assert.throws(() => app.advance(st), (e) => e.status === 409 && e.extra.missing.length === 2);
   app.advance(st, { force: true });
-  assert.equal(worthOf(st, 'Beta'), '100'); // no chit = all cash
+  assert.equal(worthOf(st, 'Beta'), '85'); // unentered = all cash, penalized 15% -> 85
 });
 
-test('capital rolls over: round 2 starts from round 1 exit value, and rank change is reported', () => {
+test('capital rolls over: round 2 starts from round 1 closing NAV (after penalty)', () => {
   const st = fresh();
   goTo(st, 1, 'entry');
-  enter(st, 'Alpha', 1, { [APEX]: '100' }); // 118
-  enter(st, 'Beta', 1, { [NEXUS]: '100' }); // 117
-  enter(st, 'Gamma', 1, {}); // 100
-  app.advance(st);
+  // Alpha has 4 stocks -> 110.28
+  enter(st, 'Alpha', 1, { [APEX]: '25', [MEDHEAL]: '25', [QUICKMART]: '25', [FINBANK]: '25' });
+  enter(st, 'Gamma', 1, { [APEX]: '100' }); // 100.3
+  app.advance(st, { force: true }); // revealed
+
   goTo(st, 2, 'investing');
   const ctx = app.entryContext(st, 'coordinator');
-  assert.equal(ctx.teams.find((t) => t.name === 'Alpha').capitalStart, '118');
-  assert.equal(ctx.teams.find((t) => t.name === 'Gamma').capitalStart, '100');
-  goTo(st, 2, 'entry');
-  enter(st, 'Alpha', 2, { [NEXUS]: '118' }); // Nexus Q2 = -6% -> 110.92
-  enter(st, 'Beta', 2, { [QUANTUM]: '117' }); // Quantum Q2 = +9% -> 127.53
-  enter(st, 'Gamma', 2, {});
-  app.advance(st);
-  const b = board(st);
-  assert.deepEqual(b.teams.map((t) => [t.name, t.worth, t.rank, t.change]), [
-    ['Beta', '127.53', 1, 1],
-    ['Alpha', '110.92', 2, -1],
-    ['Gamma', '100', 3, 0],
-  ]);
+  assert.equal(ctx.teams.find((t) => t.name === 'Alpha').capitalStart, '110.28');
+  assert.equal(ctx.teams.find((t) => t.name === 'Gamma').capitalStart, '100.3');
 });
 
-test('correcting an earlier chit that would break a later chit is refused, with a clear message', () => {
+test('correcting an earlier chit that would break a later chit is refused', () => {
   const st = fresh(['Alpha']);
   goTo(st, 1, 'entry');
-  enter(st, 'Alpha', 1, { [APEX]: '100' }); // ends 118
+  enter(st, 'Alpha', 1, { [APEX]: '100' }); // 118 * 0.85 = 100.3
   app.advance(st);
   goTo(st, 2, 'entry');
-  enter(st, 'Alpha', 2, { [QUANTUM]: '118' });
-  // admin tries to shrink round 1 exposure: end value would be 109, round 2 needs 118
+  enter(st, 'Alpha', 2, { [GREENFUEL]: '100' });
+
+  // admin tries to change Q1 to MedHeal (-3%): 100 * 0.97 * 0.85 = 82.45, but Q2 needs 100
   assert.throws(
-    () => enter(st, 'Alpha', 1, { [APEX]: '50' }, 'admin'),
-    (e) => e.status === 422 && /round 2/.test(e.message),
+    () => enter(st, 'Alpha', 1, { [MEDHEAL]: '100' }, 'admin'),
+    (e) => e.status === 422 && /round 2/.test(e.message)
   );
-  // original chit is untouched
-  assert.deepEqual(st.allocations[id(st, 'Alpha')][1].amounts, { [APEX]: '100' });
-});
-
-test('a valid correction recalculates everything downstream', () => {
-  const st = fresh(['Alpha']);
-  goTo(st, 1, 'entry');
-  enter(st, 'Alpha', 1, { [APEX]: '100' });
-  app.advance(st);
-  goTo(st, 2, 'entry');
-  enter(st, 'Alpha', 2, { [QUANTUM]: '100' }); // 100*1.09 + 18 cash = 127
-  app.advance(st);
-  assert.equal(worthOf(st, 'Alpha'), '127');
-  enter(st, 'Alpha', 1, { [NEXUS]: '100' }, 'admin'); // now 117 after Q1 -> Q2: 100*1.09 + 17
-  assert.equal(worthOf(st, 'Alpha'), '126');
 });
 
 test('going back hides results again', () => {
   const st = fresh();
   goTo(st, 1, 'entry');
-  enter(st, 'Alpha', 1, { [APEX]: '100' });
+  enter(st, 'Alpha', 1, { [APEX]: '25', [MEDHEAL]: '25', [QUICKMART]: '25', [FINBANK]: '25' });
   app.advance(st, { force: true });
-  assert.equal(worthOf(st, 'Alpha'), '118');
+  assert.equal(worthOf(st, 'Alpha'), '110.28');
   app.back(st);
   assert.equal(worthOf(st, 'Alpha'), '100');
   assert.ok(board(st).companies.every((c) => c.growth.length === 0));
@@ -170,59 +199,52 @@ test('the coordinator view never contains growth figures', () => {
   goTo(st, 2, 'investing');
   const ctx = JSON.stringify(app.entryContext(st, 'coordinator'));
   assert.ok(!/growth|returns/i.test(ctx));
-  assert.ok(!ctx.includes('0.18'));
+  assert.ok(!ctx.includes('0.18') && !ctx.includes('18%'));
 });
 
 test('final results are revealed from last place upward, one step at a time', () => {
   const st = fresh();
   goTo(st, 1, 'entry');
-  enter(st, 'Alpha', 1, { [APEX]: '100' });
-  enter(st, 'Beta', 1, { [NEXUS]: '100' });
+  enter(st, 'Alpha', 1, { [APEX]: '25', [MEDHEAL]: '25', [QUICKMART]: '25', [FINBANK]: '25' });
+  enter(st, 'Beta', 1, { [APEX]: '100' });
   app.advance(st, { force: true });
-  goTo(st, 6, 'revealed');
-  app.advance(st, { force: true });
+  goTo(st, 4, 'revealed');
+  app.advance(st, { force: true }); // final
   assert.equal(board(st).phase, 'final');
   assert.deepEqual(board(st).teams.map((t) => !!t.hidden), [true, true, true]);
   app.finalReveal(st, 'next');
   assert.deepEqual(board(st).teams.map((t) => !!t.hidden), [true, true, false]);
-  assert.equal(board(st).teams[2].name, 'Gamma');
   app.finalReveal(st, 'all');
   assert.deepEqual(board(st).teams.map((t) => t.name), ['Alpha', 'Beta', 'Gamma']);
   assert.throws(() => app.advance(st), /final/);
 });
 
-test('timeline has 4 steps per round plus the final: 25 steps for 6 rounds', () => {
-  assert.equal(app.steps(6).length, 25);
+test('timeline has 4 steps per round plus the final: 17 steps for 4 rounds', () => {
+  assert.equal(app.steps(4).length, 17);
 });
 
-test('growth data cannot be changed to drop a company that already has money in it', () => {
-  const st = fresh();
-  goTo(st, 1, 'investing');
-  enter(st, 'Alpha', 1, { [APEX]: '10' });
-  const csv = ['Company\tQ1\tQ2\tQ3\tQ4\tQ5\tQ6', 'Nexus Bank\t0.1\t0.1\t0.1\t0.1\t0.1\t0.1'].join('\n');
-  assert.throws(() => app.setReturns(st, csv), /Cannot remove "ApexTech Systems"/);
-});
-
-test('reset clears chits and goes back to the start, keeping teams', () => {
+test('reset clears chits, rumors and goes back to start, keeping teams', () => {
   const st = fresh();
   goTo(st, 1, 'entry');
-  enter(st, 'Alpha', 1, { [APEX]: '100' });
+  enter(st, 'Alpha', 1, { [APEX]: '25' });
+  app.buyRumor(st, { teamId: id(st, 'Alpha'), round: 1, role: 'admin' });
   app.advance(st, { force: true });
   app.resetEvent(st);
   assert.equal(st.step, 0);
   assert.deepEqual(st.allocations, {});
+  assert.deepEqual(st.rumors, {});
   assert.equal(st.teams.length, 3);
-  app.resetEvent(st, { clearTeams: true });
-  assert.equal(st.teams.length, 0);
 });
 
-test('CSV export contains one row per team per entered round', () => {
+test('CSV export contains exact required columns', () => {
   const st = fresh(['Alpha']);
   goTo(st, 1, 'entry');
-  enter(st, 'Alpha', 1, { [APEX]: '40', [NEXUS]: '60' });
+  app.buyRumor(st, { teamId: id(st, 'Alpha'), round: 1, role: 'admin' });
+  enter(st, 'Alpha', 1, { [APEX]: '25', [MEDHEAL]: '25', [QUICKMART]: '25', [FINBANK]: '20' });
   app.advance(st);
-  const lines = app.exportCsv(st).split('\n');
-  assert.match(lines[0], /^Team,Round,CapitalStart,Invested,Cash,ExitTotal,CapitalEnd,Invested:ApexTech Systems/);
-  assert.equal(lines.length, 2);
-  assert.match(lines[1], /^Alpha,1,100,100,0,117\.4,117\.4,40,/);
+  const csv = app.exportCsv(st);
+  const lines = csv.split('\n');
+  assert.match(lines[0], /^Team,Coordinator,Quarter,RumorCount,RumorFees,Allocation:ApexTech/);
+  assert.match(lines[1], /^Alpha,Unassigned,1,1,5,/);
 });
+

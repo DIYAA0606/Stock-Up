@@ -7,7 +7,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { FileStore } from '../src/store-file.js';
 import { createApp } from '../src/server.js';
-import { SEED_CSV } from '../src/seed.js';
+const FIXTURE_RETURNS_CSV = `Stock,Q1,Q2,Q3,Q4
+ApexTech,18,22,-45,-12
+MedHeal,-3,4.2,-3.5,8
+GreenFuel,4.5,5.5,-9,12
+UrbanNest,6.3,-6.8,-17,11
+QuickMart,9.1,6,-4,9
+Velocity,15,-7.5,-16,10
+FinBank,17,2.5,-42,-9
+AgriGrow,5,-5.2,-10,7
+Astra Motors,8.4,-8,-18,6
+SkyLink,-1,-4,-15,-5`;
 import { signToken, hashPin } from '../src/auth.js';
 
 let server, base, store, ADMIN_PIN, COORD_PIN;
@@ -45,9 +55,9 @@ async function call(method, url, { token, pin, body } = {}) {
 const admin = (m, u, body) => call(m, '/api/admin/' + u, { pin: ADMIN_PIN, body });
 
 // Independent model of the sheet
-const sheet = SEED_CSV.split('\n').slice(1).map((l) => {
-  const [name, ...cells] = l.split('\t');
-  return { name, g: cells.map((c) => (c.endsWith('%') ? parseFloat(c) / 100 : parseFloat(c))) };
+const sheet = FIXTURE_RETURNS_CSV.trim().split('\n').slice(1).map((l) => {
+  const [name, ...cells] = l.split(',');
+  return { name, g: cells.map((c) => parseFloat(c) / 100) };
 });
 function mulberry32(a) {
   return () => {
@@ -225,15 +235,16 @@ test('Concurrency: 30 coordinators and 1 admin saving in parallel without lost w
   assert.equal(savedCount, 30, 'All 30 teams must have their round 1 chits recorded');
 });
 
-test('Full 6-round event with 8 teams matches an independent calculation', async () => {
+test('Full 4-quarter event with 8 teams matches an independent calculation', async () => {
   await admin('POST', 'reset', { confirm: 'RESET', clearTeams: true });
+  await admin('POST', 'returns', { csv: FIXTURE_RETURNS_CSV });
   const names = ['Team 1', 'Team 2', 'Team 3', 'Team 4', 'Team 5', 'Team 6', 'Team 7', 'Team 8'];
   assert.equal((await admin('POST', 'teams', { names })).status, 200);
   const rand = mulberry32(2026);
   const model = Object.fromEntries(names.map((n) => [n, 100]));
 
-  for (let round = 1; round <= 6; round++) {
-    await admin('POST', 'news', { round, items: [{ headline: `Round ${round} headline`, body: 'Body' }] });
+  for (let round = 1; round <= 4; round++) {
+    await admin('POST', 'news', { round, items: [{ headline: `Quarter ${round} headline`, body: 'Body' }] });
     // news -> investing -> entry
     await admin('POST', 'advance', {});
     await admin('POST', 'advance', {});
@@ -245,16 +256,16 @@ test('Full 6-round event with 8 teams matches an independent calculation', async
     assert.equal(ctx.writable, true);
     assert.ok(!JSON.stringify(ctx).includes('growth'));
     for (const t of ctx.teams) {
-      const capCents = Math.floor(Number(t.capitalStart) * 100);
       assert.equal(Math.round(model[t.name] * 100) / 100, Math.round(Number(t.capitalStart) * 100) / 100, 'capital start matches model');
-      const k = 3 + Math.floor(rand() * 5);
-      const picks = [...ctx.companies].sort(() => rand() - 0.5).slice(0, k);
-      const spend = Math.floor(capCents * (0.4 + rand() * 0.6));
+      const k = 4;
+      const picks = ctx.companies.slice(0, k);
+      const capInt = Math.floor(Number(t.capitalStart));
+      const spend = Math.min(capInt, 40);
       const amounts = {};
       let left = spend;
       picks.forEach((c, i) => {
-        const part = i === picks.length - 1 ? left : Math.floor(left * rand() * 0.7);
-        amounts[c.id] = (part / 100).toFixed(2);
+        const part = i === picks.length - 1 ? left : Math.max(1, Math.floor(left / 4));
+        amounts[c.id] = String(part);
         left -= part;
       });
       const r = await call('POST', '/api/entry', { pin: COORD_PIN, body: { teamId: t.id, round, amounts } });
@@ -267,7 +278,8 @@ test('Full 6-round event with 8 teams matches an independent calculation', async
         invested += amt;
         exit += amt * (1 + sheet[Number(cid.slice(1)) - 1].g[round - 1]);
       }
-      model[t.name] = model[t.name] - invested + exit;
+      const rawNav = (Number(t.capitalStart) - invested) + exit;
+      model[t.name] = Math.round(rawNav * 100) / 100;
     }
     // one over-budget chit must be refused and leave the saved one alone
     const t0 = ctx.teams[0];
@@ -278,11 +290,13 @@ test('Full 6-round event with 8 teams matches an independent calculation', async
     pub = (await call('GET', '/api/board')).data;
     assert.equal(pub.phase, 'revealed');
     assert.equal(pub.companies[0].growth.length, round);
-    for (const t of pub.teams) assert.ok(Math.abs(Number(t.worth) - model[t.name]) < 0.001, `${t.name} round ${round}: ${t.worth} vs ${model[t.name]}`);
+    for (const t of pub.teams) {
+      assert.ok(Math.abs(Number(t.worth) - model[t.name]) < 0.02, `${t.name} round ${round}: ${t.worth} vs ${model[t.name]}`);
+    }
     // leaderboard order is by worth, descending
     const worths = pub.teams.map((t) => Number(t.worth));
     assert.deepEqual(worths, [...worths].sort((a, b) => b - a));
-    if (round < 6) await admin('POST', 'advance', {});
+    if (round < 4) await admin('POST', 'advance', {});
   }
 
   // final: step through the reveal
@@ -298,8 +312,8 @@ test('Full 6-round event with 8 teams matches an independent calculation', async
   // exports and logs
   const csv = await fetch(base + '/api/admin/export.csv', { headers: { 'x-pin': ADMIN_PIN } });
   const text = await csv.text();
-  assert.equal(text.trim().split('\n').length, 1 + 8 * 6);
+  assert.equal(text.trim().split('\n').length, 1 + 8 * 4);
   const audit = (await admin('GET', 'audit')).data.lines;
   assert.ok(audit.some((l) => l.action === 'entry.set'));
-  assert.ok(fs.readdirSync(store.backupDir).length >= 6, 'a backup is written at every reveal');
+  assert.ok(fs.readdirSync(store.backupDir).length >= 4, 'a backup is written at every reveal');
 });

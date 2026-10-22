@@ -1,4 +1,4 @@
-// Zero-dependency HTTP server: static pages + JSON API.
+﻿// Zero-dependency HTTP server: static pages + JSON API.
 // Works on one laptop (npm start) and on Vercel Serverless (api/index.js).
 import http from 'node:http';
 import fs from 'node:fs';
@@ -22,7 +22,7 @@ const MIME = {
   '.ico':  'image/x-icon',
 };
 
-// ─── Body reader ────────────────────────────────────────────────────────────
+// ─── Body reader ─────────────────────────────────────────────────────────────
 function readBody(req) {
   if (req.body !== undefined && req.body !== null) {
     if (typeof req.body === 'object') return Promise.resolve(req.body);
@@ -57,10 +57,10 @@ function extractToken(req) {
   return null;
 }
 
-// ─── Random PIN helper ────────────────────────────────────────────────────────
+// ─── Random PIN helper ───────────────────────────────────────────────────────
 const randPin6 = () => String(crypto.randomInt(100000, 999999));
 
-// ─── Request handler factory ──────────────────────────────────────────────────
+// ─── Request handler factory ────────────────────────────────────────────────
 export function createRequestHandler(store) {
   const json = (res, status, obj, extra = {}) => {
     res.writeHead(status, {
@@ -125,12 +125,12 @@ export function createRequestHandler(store) {
     if (backup) await store.backup(backup);
   }
 
-  // ─── Main API router ─────────────────────────────────────────────────────
+  // ─── Main API router ──────────────────────────────────────────────────────
   async function api(req, res, url) {
     const m = req.method;
     const p = url.pathname;
 
-    // ── Public board (no auth — projector safe) ──────────────────────────
+    // ── Public board (no auth — projector safe) ───────────────────────────
     if (m === 'GET' && p === '/api/board') {
       const cached = await store.getBoardCache();
       if (cached) {
@@ -152,8 +152,7 @@ export function createRequestHandler(store) {
       return res.end(boardJson);
     }
 
-    // ── Login: POST /api/auth/login or /api/login { code, pin } ─────────
-    // code = "ADMIN" for the admin, coordinator code (e.g. "C01") for coordinators
+    // ── Login: POST /api/auth/login or /api/login { code, pin } ───────────
     if (m === 'POST' && (p === '/api/auth/login' || p === '/api/login')) {
       const body = await readBody(req);
       let code = String(body.code || '').trim().toUpperCase();
@@ -231,14 +230,14 @@ export function createRequestHandler(store) {
       return json(res, 200, { token, role: 'coordinator', coordId: coord.id });
     }
 
-    // ── Coordinator entry context: GET /api/coord/entry or /api/entry ─────
+    // ── Coordinator entry context: GET /api/coord/entry or /api/entry ──
     if (m === 'GET' && (p === '/api/coord/entry' || p === '/api/entry')) {
       const payload = await need(req, res, 'admin', 'coordinator');
       const st = await store.load();
 
       let teams;
       if (payload.role === 'admin' || payload.coordId === 'legacy') {
-        teams = st.teams; // admin sees all
+        teams = st.teams;
       } else {
         const coord = await store.getCoordinator(payload.coordId);
         if (coord && !coord.enabled) throw new app.HttpError(403, 'Coordinator account disabled');
@@ -246,7 +245,6 @@ export function createRequestHandler(store) {
           const allowed = new Set(coord.assignedTeams);
           teams = st.teams.filter((t) => allowed.has(t.id));
         } else {
-          // If no specific teams are assigned to this coordinator yet, show all teams
           teams = st.teams;
         }
       }
@@ -255,13 +253,12 @@ export function createRequestHandler(store) {
       return json(res, 200, app.entryContext(st, payload.role, roundParam, teams));
     }
 
-    // ── Coordinator entry submit: POST /api/coord/entry or /api/entry ─────
+    // ── Coordinator entry submit: POST /api/coord/entry or /api/entry ──
     if (m === 'POST' && (p === '/api/coord/entry' || p === '/api/entry')) {
       const payload = await need(req, res, 'admin', 'coordinator');
       const b = await readBody(req);
       const st = await store.load();
 
-      // Enforce coordinator isolation only when specific teams are assigned
       if (payload.role === 'coordinator' && payload.coordId !== 'legacy') {
         const coord = await store.getCoordinator(payload.coordId);
         if (coord && !coord.enabled) throw new app.HttpError(403, 'Coordinator account disabled');
@@ -275,7 +272,6 @@ export function createRequestHandler(store) {
       const round = Number(b.round);
       const before = (st.allocations[b.teamId] || {})[round];
 
-      // Idempotent check — same data already saved
       if (before && JSON.stringify(before.amounts) === JSON.stringify(b.amounts)) {
         return json(res, 200, { ok: true, idempotent: true });
       }
@@ -288,13 +284,49 @@ export function createRequestHandler(store) {
         coordId: payload.coordId,
       });
 
-      // Granular write — only this team's allocation
       await store.saveAlloc(b.teamId, round, st.allocations[b.teamId][round]);
       await store.audit(payload.coordId, before ? 'entry.correct' : 'entry.set', {
         teamId: b.teamId,
         round,
         before: before?.amounts,
         after: b.amounts,
+      });
+      return json(res, 200, result);
+    }
+
+    // ── Coordinator rumor purchase: POST /api/coord/rumor or /api/rumor/buy ──
+    if (m === 'POST' && (p === '/api/coord/rumor' || p === '/api/rumor/buy')) {
+      const payload = await need(req, res, 'admin', 'coordinator');
+      const b = await readBody(req);
+      const st = await store.load();
+
+      if (payload.role === 'coordinator' && payload.coordId !== 'legacy') {
+        const coord = await store.getCoordinator(payload.coordId);
+        if (coord && !coord.enabled) throw new app.HttpError(403, 'Coordinator account disabled');
+        if (coord && coord.assignedTeams && coord.assignedTeams.length > 0) {
+          if (!coord.assignedTeams.includes(b.teamId)) {
+            throw new app.HttpError(403, 'You are not assigned to this team');
+          }
+        }
+      }
+
+      const round = Number(b.round);
+      const result = app.buyRumor(st, {
+        teamId: b.teamId,
+        round,
+        role: payload.role,
+        coordId: payload.coordId,
+      });
+
+      if (store.saveRumors) {
+        await store.saveRumors(b.teamId, round, st.rumors[b.teamId][round]);
+      } else {
+        await store.save(st);
+      }
+      await store.audit(payload.coordId, 'rumor.buy', {
+        teamId: b.teamId,
+        round,
+        count: result.rumorCount,
       });
       return json(res, 200, result);
     }
@@ -308,17 +340,19 @@ export function createRequestHandler(store) {
       // GET routes
       if (m === 'GET') {
         if (route === 'state') {
+          const coords = await store.getCoordinators();
           return json(res, 200, {
-            ...app.adminState(st),
+            ...app.adminState(st, coords),
             adminPinHash: st.settings.adminPinHash,
           });
         }
         if (route === 'export.csv') {
+          const coords = await store.getCoordinators();
           res.writeHead(200, {
             'Content-Type': 'text/csv; charset=utf-8',
             'Content-Disposition': 'attachment; filename="guess-the-growth-results.csv"',
           });
-          return res.end(app.exportCsv(st));
+          return res.end(app.exportCsv(st, coords));
         }
         if (route === 'audit') {
           const lines = await store.getAuditLines(200);
@@ -326,7 +360,6 @@ export function createRequestHandler(store) {
         }
         if (route === 'coordinators') {
           const coords = await store.getCoordinators();
-          // Strip pinHash before returning to client
           return json(res, 200, {
             coordinators: coords.map(({ pinHash, ...rest }) => rest),
           });
@@ -370,10 +403,21 @@ export function createRequestHandler(store) {
             app.setNews(st, b.round, b.items);
             await commit(st, 'ADMIN', 'news.set', { round: b.round });
             break;
-          case 'returns':
-            app.setReturns(st, b.csv);
+          case 'returns': {
+            const retRes = app.setReturns(st, b.csv);
             await commit(st, 'ADMIN', 'returns.set', {}, { backup: 'returns' });
-            break;
+            return json(res, 200, { ok: true, count: retRes.count, warnings: retRes.warnings });
+          }
+          case 'rumors/adjust': {
+            const result = app.adjustRumors(st, { teamId: b.teamId, round: b.round, count: b.count });
+            if (store.saveRumors) {
+              await store.saveRumors(b.teamId, Number(b.round), Number(b.count));
+            } else {
+              await store.save(st);
+            }
+            await store.audit('ADMIN', 'rumor.adjust', { teamId: b.teamId, round: b.round, before: result.before, after: result.after });
+            return json(res, 200, result);
+          }
           case 'settings':
             app.setSettings(st, b);
             await commit(st, 'ADMIN', 'settings', b);
@@ -388,9 +432,8 @@ export function createRequestHandler(store) {
             await commit(st, 'ADMIN', 'reset', { clearTeams: !!b.clearTeams });
             break;
 
-          // ── Coordinator management ────────────────────────────────────
+          // ── Coordinator management ─────────────────────────────────────
           case 'coordinators/generate': {
-            // b.count: number of coordinators to create
             const count = Math.max(1, Math.min(100, Number(b.count) || 1));
             const existing = await store.getCoordinators();
             const existing_codes = new Set(existing.map((c) => c.code));
@@ -407,7 +450,7 @@ export function createRequestHandler(store) {
                 assignedTeams: [],
                 enabled: true,
                 createdAt: Date.now(),
-                _pinPlain: pin, // returned once, never stored again
+                _pinPlain: pin,
               };
               await store.setCoordinator(coord);
               await store.audit('ADMIN', 'coord.create', { code });
@@ -417,15 +460,12 @@ export function createRequestHandler(store) {
           }
 
           case 'coordinators/assign': {
-            // Auto-distribute all teams evenly across enabled coordinators
             const allCoords = (await store.getCoordinators()).filter((c) => c.enabled);
             const allTeams = (await store.load()).teams;
             if (!allCoords.length) throw new app.HttpError(400, 'No enabled coordinators');
-            // Clear existing assignments
             for (const c of allCoords) {
               c.assignedTeams = [];
             }
-            // Round-robin assignment
             allTeams.forEach((t, i) => {
               allCoords[i % allCoords.length].assignedTeams.push(t.id);
             });
@@ -443,7 +483,7 @@ export function createRequestHandler(store) {
             coord.pinHash = hashPin(pin);
             await store.setCoordinator(coord);
             await store.audit('ADMIN', 'coord.reset-pin', { code: coord.code });
-            return json(res, 200, { pin }); // returned once only
+            return json(res, 200, { pin });
           }
 
           case 'coordinators/toggle': {
@@ -464,7 +504,6 @@ export function createRequestHandler(store) {
           }
 
           case 'coordinators/set-teams': {
-            // b.coordId, b.teamIds []
             const coord = await store.getCoordinator(b.coordId);
             if (!coord) throw new app.HttpError(404, 'Coordinator not found');
             coord.assignedTeams = Array.isArray(b.teamIds) ? b.teamIds : [];
@@ -521,7 +560,7 @@ export function createApp(store) {
   return http.createServer(createRequestHandler(store));
 }
 
-// ── Run directly: node src/server.js ────────────────────────────────────────
+// ─── Run directly: node src/server.js ────────────────────────────────────────
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const store = await createStore();
   const st = await store.load();

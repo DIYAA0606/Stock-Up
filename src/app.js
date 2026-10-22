@@ -1,7 +1,24 @@
-// Event logic on top of the engine. Everything here is a function of the state object (see store.js).
-import { toUnits, fromUnits, computeTeam, rankItems, buildReturns, parseReturnsCsv, SCALE } from './engine.js';
+﻿// Event logic on top of the engine. Everything here is a function of the state object (see store.js).
+import {
+  toUnits,
+  fromUnits,
+  roundHalfUp,
+  computeTeam,
+  rankItems,
+  buildReturns,
+  parseReturnsCsv,
+  SCALE,
+} from './engine.js';
+import { saveReturnsCsv } from './seed.js';
 
-const PHASES = ['news', 'investing', 'entry', 'revealed'];
+export const PHASES = ['news', 'investing', 'entry', 'revealed'];
+
+export const ROUND_NAMES = {
+  1: 'The Boom Begins',
+  2: 'The Bubble Grows',
+  3: 'The Calamity',
+  4: 'Picking Up the Pieces',
+};
 
 export class HttpError extends Error {
   constructor(status, message, extra = {}) {
@@ -12,16 +29,16 @@ export class HttpError extends Error {
 }
 
 // ---------- timeline ----------
-export function steps(R) {
+export function steps(R = 4) {
   const s = [];
   for (let r = 1; r <= R; r++) for (const phase of PHASES) s.push({ round: r, phase });
   s.push({ round: R, phase: 'final' });
   return s;
 }
-export const current = (st) => steps(st.settings.rounds)[st.step];
+export const current = (st) => steps(st.settings.rounds || 4)[st.step];
 
 export function phaseLabel(round, phase) {
-  if (phase === 'news') return round === 1 ? 'Company Information Release' : 'News Burst';
+  if (phase === 'news') return round === 1 ? 'Information Release' : 'News Burst';
   if (phase === 'investing') return 'Investment Window';
   if (phase === 'entry') return 'Capital Update';
   if (phase === 'revealed') return `Quarter ${round} Results`;
@@ -30,7 +47,7 @@ export function phaseLabel(round, phase) {
 
 /** How many rounds' results are visible to everyone. */
 export function revealedThrough(st) {
-  const S = steps(st.settings.rounds);
+  const S = steps(st.settings.rounds || 4);
   let n = 0;
   for (let i = 0; i <= st.step; i++) {
     if (S[i].phase === 'revealed') n = S[i].round;
@@ -62,13 +79,18 @@ function allocFor(st, teamId) {
   return out;
 }
 
-function computeFor(st, team, upTo, returns) {
+export function computeFor(st, team, upTo, returns) {
   return computeTeam({
     startingCapital: startUnits(st),
-    rounds: st.settings.rounds,
-    returns: returns || buildReturns(st.companies, st.settings.rounds),
+    rounds: st.settings.rounds || 4,
+    returns: returns || buildReturns(st.companies, st.settings.rounds || 4),
     allocations: allocFor(st, team.id),
+    rumors: st.rumors?.[team.id] || {},
     upTo,
+    penaltyMode: st.settings.penaltyMode || 'every_quarter',
+    penaltyPercent: st.settings.penaltyPercent !== undefined ? Number(st.settings.penaltyPercent) : 15,
+    minPerStock: st.settings.minPerStock || '1',
+    rumorFee: st.settings.rumorFee || '5',
   });
 }
 
@@ -76,7 +98,7 @@ const pct = (a, b) => (b === 0n ? null : Number(((a - b) * 100000n) / b) / 1000)
 
 // ---------- public board ----------
 export function buildBoard(st, { full = false } = {}) {
-  const R = st.settings.rounds;
+  const R = st.settings.rounds || 4;
   const c = current(st);
   const rev = revealedThrough(st);
   const returns = buildReturns(st.companies, R);
@@ -91,6 +113,7 @@ export function buildBoard(st, { full = false } = {}) {
   let teams = rows.map(({ team, comp }) => {
     const done = comp.rounds.filter((x) => x.capitalEnd !== null);
     const last = done[done.length - 1];
+    const curRound = comp.rounds[c.round - 1];
     const t = {
       id: team.id,
       name: team.name,
@@ -100,15 +123,27 @@ export function buildBoard(st, { full = false } = {}) {
       change: prevRank ? prevRank.get(team.id) - rank.get(team.id) : null,
       lastReturnPct: last ? pct(last.capitalEnd, last.capitalStart) : null,
       history: done.map((x) => fromUnits(x.capitalEnd)),
+      rumorCount: curRound ? curRound.rumorCount : 0,
+      rumorFees: curRound ? fromUnits(curRound.rumorFees) : '0',
+      penalized: curRound ? curRound.penalized : false,
+      penalty: curRound && curRound.penalty !== null ? fromUnits(curRound.penalty) : null,
+      distinctCount: curRound ? curRound.distinctCount : 0,
     };
     if (full) {
       t.rounds = comp.rounds.map((x) => ({
         round: x.round,
         entered: x.entered,
         capitalStart: fromUnits(x.capitalStart),
+        rumorCount: x.rumorCount,
+        rumorFees: fromUnits(x.rumorFees),
+        investableCash: fromUnits(x.investableCash),
         invested: fromUnits(x.invested),
         cash: fromUnits(x.cash),
+        distinctCount: x.distinctCount,
         exitTotal: x.exitTotal === null ? null : fromUnits(x.exitTotal),
+        navBeforePenalty: x.navBeforePenalty === null ? null : fromUnits(x.navBeforePenalty),
+        penalized: x.penalized,
+        penalty: x.penalty === null ? null : fromUnits(x.penalty),
         capitalEnd: x.capitalEnd === null ? null : fromUnits(x.capitalEnd),
         overBudget: x.overBudget,
       }));
@@ -125,6 +160,7 @@ export function buildBoard(st, { full = false } = {}) {
   return {
     phase: c.phase,
     round: c.round,
+    roundName: ROUND_NAMES[c.round] || '',
     label: phaseLabel(c.round, c.phase),
     rounds: R,
     revealedThrough: rev,
@@ -134,30 +170,22 @@ export function buildBoard(st, { full = false } = {}) {
     serverNow: Date.now(),
     finalReveal: st.finalReveal,
     teams,
-    // Growth figures are only ever sent for rounds that have been revealed.
     companies: st.companies.map((co) => ({ id: co.id, name: co.name, growth: full ? co.returns : co.returns.slice(0, rev) })),
     news: c.phase === 'final' ? [] : st.news[c.round] || [],
   };
 }
 
 // ---------- coordinator entry ----------
-/**
- * @param {object} st                  Full game state
- * @param {string} role                'admin' | 'coordinator'
- * @param {string|null} requestedRound Round override (admin only)
- * @param {Array|null}  teamsOverride  Pre-filtered team list (coordinator isolation)
- */
 export function entryContext(st, role, requestedRound, teamsOverride = null) {
   const c = current(st);
-  const maxRound = c.round; // nobody can enter a future round
+  const maxRound = c.round;
   let round = c.round;
   if (role === 'admin' && requestedRound) round = Math.min(Math.max(1, Number(requestedRound)), maxRound);
-  const returns = buildReturns(st.companies, st.settings.rounds);
+  const returns = buildReturns(st.companies, st.settings.rounds || 4);
   const writable = role === 'admin' ? true : round === c.round && (c.phase === 'investing' || c.phase === 'entry');
-  // Use the override (coordinator's assigned teams) or all teams (admin)
   const srcTeams = teamsOverride !== null ? teamsOverride : st.teams;
   const teams = srcTeams.map((t) => {
-    const comp = computeFor(st, t, st.settings.rounds, returns); // full projection: capitalStart only depends on earlier rounds
+    const comp = computeFor(st, t, st.settings.rounds || 4, returns);
     const row = comp.rounds[round - 1];
     const alloc = (st.allocations[t.id] || {})[round];
     return {
@@ -165,25 +193,33 @@ export function entryContext(st, role, requestedRound, teamsOverride = null) {
       name: t.name,
       entered: !!alloc,
       capitalStart: fromUnits(row.capitalStart),
+      rumorCount: row.rumorCount,
+      rumorFees: fromUnits(row.rumorFees),
+      investableCash: fromUnits(row.investableCash),
+      distinctCount: row.distinctCount,
       amounts: alloc ? alloc.amounts : {},
     };
   });
   return {
     phase: c.phase,
     round: c.round,
+    roundName: ROUND_NAMES[c.round] || '',
     selectedRound: round,
     label: phaseLabel(c.round, c.phase),
     writable,
     role,
     phaseEndsAt: st.phaseEndsAt,
     serverNow: Date.now(),
-    companies: st.companies.map((co) => ({ id: co.id, name: co.name })), // names only, never growth
+    companies: st.companies.map((co) => ({ id: co.id, name: co.name })),
     teams,
+    minPerStock: st.settings.minPerStock || '1',
+    rumorFee: st.settings.rumorFee || '5',
+    penaltyPercent: st.settings.penaltyPercent !== undefined ? st.settings.penaltyPercent : 15,
   };
 }
 
 export function applyEntry(st, { teamId, round, amounts, role, coordId }) {
-  const R = st.settings.rounds;
+  const R = st.settings.rounds || 4;
   const c = current(st);
   const team = st.teams.find((t) => t.id === teamId);
   if (!team) throw new HttpError(404, 'Unknown team');
@@ -195,9 +231,12 @@ export function applyEntry(st, { teamId, round, amounts, role, coordId }) {
       throw new HttpError(409, 'Entry is closed for this round. Ask the admin to open it or make a correction.');
     }
   }
+
+  const minUnits = toUnits(st.settings.minPerStock || '1');
   const clean = {};
   for (const [cid, v] of Object.entries(amounts || {})) {
-    if (!st.companies.some((co) => co.id === cid)) throw new HttpError(400, `Unknown company ${cid}`);
+    const co = st.companies.find((co) => co.id === cid);
+    if (!co) throw new HttpError(400, `Unknown company ${cid}`);
     if (v === '' || v === null || v === undefined) continue;
     let u;
     try {
@@ -206,29 +245,122 @@ export function applyEntry(st, { teamId, round, amounts, role, coordId }) {
       throw new HttpError(400, e.message);
     }
     if (u < 0n) throw new HttpError(400, 'Amounts cannot be negative');
+    if (u > 0n && u < minUnits) {
+      throw new HttpError(400, `Amount for ${co.name} (${fromUnits(u)} Cr) must be at least ${fromUnits(minUnits)} Cr (or 0)`);
+    }
     if (u > 0n) clean[cid] = fromUnits(u);
   }
 
-  // Apply to a copy, then check every team-round budget so a late correction can never break a later round.
-  const trial = { ...st, allocations: { ...st.allocations, [teamId]: { ...(st.allocations[teamId] || {}) } } };
+  const trial = {
+    ...st,
+    allocations: { ...st.allocations, [teamId]: { ...(st.allocations[teamId] || {}) } },
+  };
   trial.allocations[teamId][round] = { amounts: clean, by: coordId || role, at: Date.now() };
   const comp = computeFor(trial, team, R);
   const bad = comp.rounds.find((x) => x.overBudget);
   if (bad) {
     const label = bad.round === round ? 'This chit' : `The chit already entered for round ${bad.round}`;
-    throw new HttpError(422, `${label} invests ${fromUnits(bad.invested)} Cr but only ${fromUnits(bad.capitalStart)} Cr is available.`, {
-      round: bad.round,
-      invested: fromUnits(bad.invested),
-      available: fromUnits(bad.capitalStart),
-    });
+    throw new HttpError(
+      422,
+      `${label} invests ${fromUnits(bad.invested)} Cr but only ${fromUnits(bad.investableCash)} Cr is investable (available: ${fromUnits(bad.capitalStart)} Cr, rumor fees: ${fromUnits(bad.rumorFees)} Cr).`,
+      {
+        round: bad.round,
+        invested: fromUnits(bad.invested),
+        available: fromUnits(bad.capitalStart),
+        investable: fromUnits(bad.investableCash),
+        rumorFees: fromUnits(bad.rumorFees),
+      }
+    );
   }
-  st.allocations[teamId] = trial.allocations[teamId];
-  return { team: team.name, round, invested: fromUnits(comp.rounds[round - 1].invested), cash: fromUnits(comp.rounds[round - 1].cash) };
+
+  if (!st.allocations[teamId]) st.allocations[teamId] = {};
+  st.allocations[teamId][round] = trial.allocations[teamId][round];
+  const rRow = comp.rounds[round - 1];
+  return {
+    team: team.name,
+    round,
+    invested: fromUnits(rRow.invested),
+    cash: fromUnits(rRow.cash),
+    rumorCount: rRow.rumorCount,
+    rumorFees: fromUnits(rRow.rumorFees),
+  };
+}
+
+export function buyRumor(st, { teamId, round, role, coordId }) {
+  const R = st.settings.rounds || 4;
+  const c = current(st);
+  const team = st.teams.find((t) => t.id === teamId);
+  if (!team) throw new HttpError(404, 'Unknown team');
+  round = Number(round);
+  if (!Number.isInteger(round) || round < 1 || round > R) throw new HttpError(400, 'Invalid round');
+  if (round > c.round) throw new HttpError(409, `Round ${round} has not started yet`);
+  if (role !== 'admin') {
+    if (round !== c.round || !(c.phase === 'investing' || c.phase === 'entry')) {
+      throw new HttpError(409, 'Rumor purchase is closed for this round.');
+    }
+  }
+
+  if (!st.rumors) st.rumors = {};
+  if (!st.rumors[teamId]) st.rumors[teamId] = {};
+  const currentCount = Number(st.rumors[teamId][round] || 0);
+  const newCount = currentCount + 1;
+
+  const trial = {
+    ...st,
+    rumors: { ...st.rumors, [teamId]: { ...(st.rumors[teamId] || {}), [round]: newCount } },
+  };
+  const comp = computeFor(trial, team, R);
+  const bad = comp.rounds.find((x) => x.overBudget);
+  if (bad) {
+    throw new HttpError(
+      422,
+      `Cannot buy rumor: total rumor fees (${fromUnits(bad.rumorFees)} Cr) plus allocations (${fromUnits(bad.invested)} Cr) would exceed capital (${fromUnits(bad.capitalStart)} Cr).`
+    );
+  }
+
+  st.rumors[teamId][round] = newCount;
+  const teamComp = computeFor(st, team, R);
+  const rRow = teamComp.rounds[round - 1];
+  return {
+    team: team.name,
+    round,
+    rumorCount: newCount,
+    rumorFees: fromUnits(rRow.rumorFees),
+    investableCash: fromUnits(rRow.investableCash),
+  };
+}
+
+export function adjustRumors(st, { teamId, round, count }) {
+  const R = st.settings.rounds || 4;
+  const team = st.teams.find((t) => t.id === teamId);
+  if (!team) throw new HttpError(404, 'Unknown team');
+  round = Number(round);
+  count = Number(count);
+  if (!Number.isInteger(count) || count < 0) throw new HttpError(400, 'Rumor count must be non-negative integer');
+  if (!st.rumors) st.rumors = {};
+  if (!st.rumors[teamId]) st.rumors[teamId] = {};
+  const before = Number(st.rumors[teamId][round] || 0);
+
+  const trial = {
+    ...st,
+    rumors: { ...st.rumors, [teamId]: { ...(st.rumors[teamId] || {}), [round]: count } },
+  };
+  const comp = computeFor(trial, team, R);
+  const bad = comp.rounds.find((x) => x.overBudget);
+  if (bad) {
+    throw new HttpError(
+      422,
+      `Cannot adjust rumors: total fees (${fromUnits(bad.rumorFees)} Cr) plus allocations (${fromUnits(bad.invested)} Cr) would exceed capital (${fromUnits(bad.capitalStart)} Cr).`
+    );
+  }
+
+  st.rumors[teamId][round] = count;
+  return { team: team.name, round, before, after: count };
 }
 
 // ---------- admin ----------
 export function advance(st, { force = false } = {}) {
-  const S = steps(st.settings.rounds);
+  const S = steps(st.settings.rounds || 4);
   if (st.step >= S.length - 1) throw new HttpError(409, 'Already at the final results');
   const c = current(st);
   if (c.phase === 'entry' && !force) {
@@ -257,9 +389,10 @@ export function finalReveal(st, action) {
   else throw new HttpError(400, 'Unknown action');
 }
 
-/** Wipe chits and go back to the start (used after a dry run). Teams, news and growth data stay unless clearTeams. */
+/** Wipe chits and rumors and go back to the start. */
 export function resetEvent(st, { clearTeams = false } = {}) {
   st.allocations = {};
+  st.rumors = {};
   st.step = 0;
   st.finalReveal = 0;
   if (clearTeams) {
@@ -288,11 +421,12 @@ export function removeTeam(st, id) {
   if (i < 0) throw new HttpError(404, 'Unknown team');
   st.teams.splice(i, 1);
   delete st.allocations[id];
+  if (st.rumors) delete st.rumors[id];
 }
 
 export function setNews(st, round, items) {
   round = Number(round);
-  if (!Number.isInteger(round) || round < 1 || round > st.settings.rounds) throw new HttpError(400, 'Invalid round');
+  if (!Number.isInteger(round) || round < 1 || round > (st.settings.rounds || 4)) throw new HttpError(400, 'Invalid round');
   st.news[round] = (items || [])
     .map((i) => ({ headline: String(i.headline || '').trim(), body: String(i.body || '').trim() }))
     .filter((i) => i.headline || i.body)
@@ -302,7 +436,7 @@ export function setNews(st, round, items) {
 export function setReturns(st, csv) {
   let parsed;
   try {
-    parsed = parseReturnsCsv(csv, st.settings.rounds);
+    parsed = parseReturnsCsv(csv, st.settings.rounds || 4);
   } catch (e) {
     throw new HttpError(400, e.message);
   }
@@ -328,9 +462,17 @@ export function setReturns(st, csv) {
     }
   }
   st.companies = next;
+  st.returnsIsSample = false;
+  st.returnsWarnings = parsed.warnings || [];
+  try {
+    saveReturnsCsv(csv);
+  } catch (e) {
+    console.warn('Failed to overwrite config/returns.csv:', e.message);
+  }
+  return { count: next.length, warnings: st.returnsWarnings };
 }
 
-export function setSettings(st, { startingCapital, durations }) {
+export function setSettings(st, { startingCapital, durations, penaltyMode, penaltyPercent, minPerStock, rumorFee }) {
   if (startingCapital !== undefined) {
     const anyEntry = Object.keys(st.allocations).length > 0;
     if (anyEntry && String(startingCapital) !== st.settings.startingCapital) {
@@ -354,43 +496,109 @@ export function setSettings(st, { startingCapital, durations }) {
       }
     }
   }
+  if (penaltyMode !== undefined) {
+    if (!['every_quarter', 'final_only'].includes(penaltyMode)) {
+      throw new HttpError(400, 'Invalid penaltyMode: must be every_quarter or final_only');
+    }
+    st.settings.penaltyMode = penaltyMode;
+  }
+  if (penaltyPercent !== undefined) {
+    const p = Number(penaltyPercent);
+    if (!(p >= 0 && p <= 100)) throw new HttpError(400, 'Invalid penaltyPercent');
+    st.settings.penaltyPercent = p;
+  }
+  if (minPerStock !== undefined) {
+    const u = toUnits(minPerStock);
+    if (u < 0n) throw new HttpError(400, 'minPerStock cannot be negative');
+    st.settings.minPerStock = fromUnits(u);
+  }
+  if (rumorFee !== undefined) {
+    const u = toUnits(rumorFee);
+    if (u < 0n) throw new HttpError(400, 'rumorFee cannot be negative');
+    st.settings.rumorFee = fromUnits(u);
+  }
 }
 
-export function adminState(st) {
+export function adminState(st, coordinators = []) {
   const board = buildBoard(st, { full: true });
   const c = current(st);
   const missing =
     c.phase === 'investing' || c.phase === 'entry' ? st.teams.filter((t) => !(st.allocations[t.id] || {})[c.round]).map((t) => t.name) : [];
-  const S = steps(st.settings.rounds);
+  const S = steps(st.settings.rounds || 4);
+  const coordByTeam = new Map();
+  for (const cd of coordinators) {
+    for (const tid of cd.assignedTeams || []) coordByTeam.set(tid, cd.code);
+  }
+  const teamsWithCoord = board.teams.map((t) => ({
+    ...t,
+    coordinator: coordByTeam.get(t.id) || 'Unassigned',
+  }));
+
   return {
     ...board,
-    settings: { startingCapital: st.settings.startingCapital, rounds: st.settings.rounds, durations: st.settings.durations },
+    teams: teamsWithCoord,
+    settings: {
+      startingCapital: st.settings.startingCapital,
+      rounds: st.settings.rounds || 4,
+      durations: st.settings.durations,
+      penaltyMode: st.settings.penaltyMode || 'every_quarter',
+      penaltyPercent: st.settings.penaltyPercent !== undefined ? st.settings.penaltyPercent : 15,
+      minPerStock: st.settings.minPerStock || '1',
+      rumorFee: st.settings.rumorFee || '5',
+    },
+    returnsIsSample: st.returnsIsSample ?? true,
+    returnsWarnings: st.returnsWarnings || [],
     newsByRound: st.news,
     missing,
     step: st.step,
     totalSteps: S.length,
-    nextLabel: st.step < S.length - 1 ? phaseLabel(S[st.step + 1].round, S[st.step + 1].phase) + (S[st.step + 1].phase === 'final' ? '' : ` · Round ${S[st.step + 1].round}`) : null,
+    nextLabel:
+      st.step < S.length - 1
+        ? phaseLabel(S[st.step + 1].round, S[st.step + 1].phase) + (S[st.step + 1].phase === 'final' ? '' : ` — Quarter ${S[st.step + 1].round}`)
+        : null,
   };
 }
 
-export function exportCsv(st) {
-  const R = st.settings.rounds;
+export function exportCsv(st, coordinators = []) {
+  const R = st.settings.rounds || 4;
   const returns = buildReturns(st.companies, R);
-  const head = ['Team', 'Round', 'CapitalStart', 'Invested', 'Cash', 'ExitTotal', 'CapitalEnd', ...st.companies.map((c) => `Invested:${c.name}`)];
+  const coordByTeam = new Map();
+  for (const cd of coordinators) {
+    for (const tid of cd.assignedTeams || []) coordByTeam.set(tid, cd.code);
+  }
+
+  const head = [
+    'Team',
+    'Coordinator',
+    'Quarter',
+    'RumorCount',
+    'RumorFees',
+    ...st.companies.map((c) => `Allocation:${c.name}`),
+    'CashLeft',
+    'NavBeforePenalty',
+    'Penalty',
+    'NavAfterPenalty',
+    'Rank',
+  ];
   const rows = [head];
+
   for (const t of st.teams) {
     const comp = computeFor(st, t, revealedThrough(st), returns);
+    const coordCode = coordByTeam.get(t.id) || 'Unassigned';
     for (const r of comp.rounds) {
-      if (r.capitalEnd === null && !r.entered) continue;
+      if (r.capitalEnd === null && !r.entered && r.rumorCount === 0) continue;
       rows.push([
         t.name,
+        coordCode,
         r.round,
-        fromUnits(r.capitalStart),
-        fromUnits(r.invested),
+        r.rumorCount,
+        fromUnits(r.rumorFees),
+        ...st.companies.map((c) => (r.amounts[c.id] ? fromUnits(r.amounts[c.id]) : '0')),
         fromUnits(r.cash),
-        r.exitTotal === null ? '' : fromUnits(r.exitTotal),
+        r.navBeforePenalty === null ? '' : fromUnits(r.navBeforePenalty),
+        r.penalty === null ? '' : fromUnits(r.penalty),
         r.capitalEnd === null ? '' : fromUnits(r.capitalEnd),
-        ...st.companies.map((c) => (r.amounts[c.id] ? fromUnits(r.amounts[c.id]) : '')),
+        '', // rank evaluated dynamically per round if needed
       ]);
     }
   }

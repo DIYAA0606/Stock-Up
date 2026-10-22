@@ -1,4 +1,4 @@
-import { $, esc, fmt, api, toast, gate, makeClock, mmss, clearToken, getCoordId } from '/common.js';
+﻿import { $, esc, fmt, api, toast, gate, makeClock, mmss, clearToken, getCoordId } from '/common.js';
 
 const root = document.getElementById('root');
 const clock = makeClock();
@@ -72,7 +72,7 @@ function shell() {
 const visibleTeams = () => ctx.teams.filter((t) => t.name.toLowerCase().includes(filter.trim().toLowerCase()));
 
 function renderBar() {
-  $('#phase').textContent = `Round ${ctx.round} · ${ctx.label}`;
+  $('#phase').textContent = `Quarter ${ctx.round}${ctx.roundName ? ` • ${ctx.roundName}` : ` • ${ctx.label}`}`;
   const o = $('#open');
   o.textContent = ctx.writable ? 'Entry open' : 'Entry closed';
   o.className = 'badge ' + (ctx.writable ? 'open' : 'closed');
@@ -80,29 +80,42 @@ function renderBar() {
 
 function renderTeams() {
   const entered = ctx.teams.filter((t) => t.entered).length;
-  $('#progress').textContent = `${entered} of ${ctx.teams.length} assigned chits entered for round ${ctx.selectedRound}`;
+  $('#progress').textContent = `${entered} of ${ctx.teams.length} assigned chits entered for quarter ${ctx.selectedRound}`;
   const list = visibleTeams();
   $('#teams').innerHTML = list.length
-    ? list.map((t) => `<button class="team ${t.id === sel ? 'sel' : ''}" data-id="${t.id}"><span>${esc(t.name)}<br><span class="cap num">Available ${fmt(t.capitalStart)} Cr</span></span>${t.entered ? '<span class="tick" aria-label="entered">✓</span>' : ''}</button>`).join('')
+    ? list.map((t) => `<button class="team ${t.id === sel ? 'sel' : ''}" data-id="${t.id}"><span>${esc(t.name)}<br><span class="cap num">Available ${fmt(t.capitalStart)} Cr${t.rumorCount ? ` · ${t.rumorCount} rumor${t.rumorCount > 1 ? 's' : ''}` : ''}</span></span>${t.entered ? '<span class="tick" aria-label="entered">✓</span>' : ''}</button>`).join('')
     : `<div class="muted" style="padding:12px;line-height:1.4">${ctx.teams.length === 0 ? 'No teams found in this event yet.<br><br>Please add teams in the <a href="/admin.html" style="color:var(--accent);text-decoration:underline">Admin Panel</a> (Teams tab).' : `No team matches "${esc(filter)}".`}</div>`;
   for (const b of $('#teams').querySelectorAll('.team')) b.addEventListener('click', () => choose(b.dataset.id));
 }
 
 function totals() {
   const t = ctx.teams.find((x) => x.id === sel);
-  if (!t) return { t: null, invested: 0, count: 0, cap: 0, left: 0, bad: false, over: false };
+  if (!t) return { t: null, invested: 0, count: 0, cap: 0, rumorFees: 0, investable: 0, left: 0, bad: false, over: false, belowMin: [] };
   let invested = 0;
   let count = 0;
   let bad = false;
-  for (const v of Object.values(draft)) {
+  const belowMin = [];
+  const minPerStock = Number(ctx.minPerStock || 1);
+
+  for (const [cid, v] of Object.entries(draft)) {
     if (String(v).trim() === '') continue;
     const n = num(v);
     if (Number.isNaN(n) || n < 0) { bad = true; continue; }
-    if (n > 0) { invested += n; count++; }
+    if (n > 0) {
+      if (n < minPerStock) {
+        const co = ctx.companies.find((c) => c.id === cid);
+        belowMin.push(co ? co.name : cid);
+      }
+      invested += n;
+      count++;
+    }
   }
+
   const cap = Number(t.capitalStart);
-  const left = cap - invested;
-  return { t, invested, count, cap, left, bad, over: left < -1e-9 };
+  const rumorFees = Number(t.rumorFees || 0);
+  const investable = cap - rumorFees;
+  const left = investable - invested;
+  return { t, invested, count, cap, rumorFees, investable, left, bad, over: left < -1e-9, belowMin };
 }
 
 function renderForm() {
@@ -110,7 +123,7 @@ function renderForm() {
   if (!sel) {
     box.innerHTML = ctx.teams.length === 0
       ? `<div style="padding:16px"><p class="muted">No teams are available in this event yet.</p><p class="muted">Go to the <a href="/admin.html" style="color:var(--accent);text-decoration:underline">Admin Panel</a> &rarr; <b>Teams</b> tab to add or import your team list.</p></div>`
-      : `<p class="muted">Pick one of your assigned teams on the left. Type part of the name and press Enter. In the amounts, Enter moves to the next company and Ctrl+Enter jumps straight to the review.</p>`;
+      : `<p class="muted">Pick one of your assigned teams on the left. Type part of the name and press Enter. In the amounts, Enter moves to the next stock and Ctrl+Enter jumps straight to review.</p>`;
     return;
   }
   const { t } = totals();
@@ -120,19 +133,43 @@ function renderForm() {
   }
   const dis = ctx.writable ? '' : 'disabled';
   box.innerHTML = `
-    <h2 style="margin:0">${esc(t.name)} <span class="muted" style="font-size:16px;font-weight:400">· round ${ctx.selectedRound}</span></h2>
-    <div class="muted num">Available to invest: <b style="color:var(--text)">${fmt(t.capitalStart)} Cr</b>${t.entered ? ' · chit already entered, saving replaces it' : ''}</div>
+    <h2 style="margin:0">${esc(t.name)} <span class="muted" style="font-size:16px;font-weight:400">— Quarter ${ctx.selectedRound}${ctx.roundName ? ` (${esc(ctx.roundName)})` : ''}</span></h2>
+    <div class="muted num" style="margin-top:4px">Quarter Opening Capital: <b style="color:var(--text)">${fmt(t.capitalStart)} Cr</b>${t.entered ? ' · chit already entered, saving replaces it' : ''}</div>
+    
+    <div class="inline" style="gap:12px;margin:10px 0;align-items:center;background:var(--panel2);padding:10px 14px;border-radius:6px;border:1px solid var(--line)">
+      <span class="pill" style="font-size:13px">Rumors bought: <b id="rCount">${t.rumorCount || 0}</b> (${fmt(t.rumorFees || 0)} Cr sunk)</span>
+      <button class="btn small dark" id="buyRumorBtn" ${dis}>+ Buy rumor (5 Cr)</button>
+      <span class="muted" style="margin-left:auto;font-size:13px">Investable cash: <b id="invCash" style="color:var(--text)">${fmt(t.investableCash || t.capitalStart)} Cr</b></span>
+    </div>
+
     ${ctx.writable ? '' : '<div class="note bad">Entry is closed for this round. Waiting for admin.</div>'}
     <div class="alloc">${ctx.companies.map((c) => `<div><label for="a_${c.id}"><span>${esc(c.name)}</span></label><input id="a_${c.id}" data-c="${c.id}" type="text" inputmode="decimal" autocomplete="off" placeholder="0" value="${esc(draft[c.id] ?? '')}" ${dis}></div>`).join('')}</div>
     <div id="notes"></div>
     <div class="summary num">
       <div><div class="muted">Invested</div><div class="v" id="inv"></div></div>
+      <div><div class="muted">Rumor fees</div><div class="v" id="rf">${fmt(t.rumorFees || 0)} Cr</div></div>
       <div><div class="muted">Stays as cash</div><div class="v" id="cash"></div></div>
       <div style="margin-left:auto" class="inline">
         <button class="btn ghost" id="clear" ${dis}>Clear</button>
         <button class="btn" id="review" ${dis}>Review chit</button>
       </div>
     </div>`;
+
+  $('#buyRumorBtn')?.addEventListener('click', async () => {
+    if (!confirm(`Buy a rumor for ${t.name}?\n\nThis will immediately and permanently deduct 5 Cr from this quarter's available cash (sunk cost).`)) return;
+    try {
+      const res = await api('/api/coord/rumor', {
+        method: 'POST',
+        body: { teamId: sel, round: ctx.selectedRound },
+      });
+      toast(`Rumor purchased for ${t.name}! 5 Cr deducted.`, 'ok');
+      await load(true);
+      render();
+    } catch (e) {
+      toast(e.message, 'err');
+    }
+  });
+
   const inputs = [...box.querySelectorAll('.alloc input')];
   inputs.forEach((inp, i) => {
     inp.addEventListener('input', () => { draft[inp.dataset.c] = inp.value; inp.classList.toggle('has', num(inp.value) > 0); refreshTotals(); });
@@ -152,29 +189,34 @@ function renderForm() {
 }
 
 function refreshTotals() {
-  const { invested, count, left, bad, over } = totals();
+  const { invested, count, left, bad, over, belowMin, rumorFees } = totals();
   $('#inv').textContent = fmt(invested) + ' Cr';
   const cash = $('#cash');
   cash.textContent = fmt(left) + ' Cr';
   cash.className = 'v' + (over ? ' over' : '');
   const notes = [];
   if (bad) notes.push(['bad', 'One of the amounts is not a valid positive number.']);
-  if (over) notes.push(['bad', `This chit is ${fmt(-left)} Cr over the available amount.`]);
-  if (!over && !bad && count > 0 && count < 4) notes.push(['warn', `Only ${count} compan${count === 1 ? 'y' : 'ies'} chosen. The rules ask for at least 4.`]);
-  $('#notes').innerHTML = notes.map(([k, m]) => `<div class="note ${k}">${esc(m)}</div>`).join('');
-  $('#review').disabled = !ctx.writable || bad || over;
+  if (belowMin.length) notes.push(['bad', `Amount for ${belowMin.join(', ')} must be at least ${ctx.minPerStock || 1} Cr (or 0).`]);
+  if (over) notes.push(['bad', `This chit is ${fmt(-left)} Cr over the available investable amount.`]);
+  if (!over && !bad && count < 4) {
+    notes.push(['bad', `Under 4 stocks (${count} chosen): 15% penalty applies`]);
+  }
+  $('#notes').innerHTML = notes.map(([k, m]) => `<div class="note ${k}" style="${k === 'bad' && m.includes('penalty') ? 'background:#3d1414;color:#ff8585;border:1px solid #752222;font-weight:700' : ''}">${esc(m)}</div>`).join('');
+  $('#review').disabled = !ctx.writable || bad || over || belowMin.length > 0;
 }
 
 function review() {
-  const { t, invested, left, bad, over } = totals();
-  if (!ctx.writable || bad || over || !t) return;
+  const { t, invested, left, bad, over, belowMin, count, rumorFees } = totals();
+  if (!ctx.writable || bad || over || belowMin.length > 0 || !t) return;
   const lines = ctx.companies.filter((c) => num(draft[c.id]) > 0);
   $('#modal').innerHTML = `<div class="modal-bg"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="mt">
     <h2 id="mt">Read this back to the team</h2>
-    <div><b>${esc(t.name)}</b> · round ${ctx.selectedRound}</div>
+    <div><b>${esc(t.name)}</b> — Quarter ${ctx.selectedRound}${ctx.roundName ? ` (${esc(ctx.roundName)})` : ''}</div>
     <table class="num">${lines.length ? lines.map((c) => `<tr><td>${esc(c.name)}</td><td>${fmt(num(draft[c.id]))} Cr</td></tr>`).join('') : '<tr><td>No investments (all cash)</td><td></td></tr>'}
+    ${rumorFees > 0 ? `<tr><td>Rumor fees (sunk cost)</td><td>${fmt(rumorFees)} Cr</td></tr>` : ''}
     <tr><td><b>Invested</b></td><td><b>${fmt(invested)} Cr</b></td></tr>
     <tr><td>Stays as cash</td><td>${fmt(left)} Cr</td></tr></table>
+    ${count < 4 ? `<div class="note bad" style="margin:12px 0;background:#3d1414;color:#ff8585;border:1px solid #752222;font-weight:700">⚠️ Under 4 stocks (${count} chosen): 15% penalty will be deducted from closing NAV.</div>` : ''}
     <div class="inline" style="justify-content:flex-end">
       <button class="btn ghost" id="mBack">Go back and edit</button>
       <button class="btn" id="mSave">Save chit</button>
@@ -197,7 +239,7 @@ async function save() {
   try {
     const r = await api('/api/coord/entry', { method: 'POST', body: { teamId: sel, round: ctx.selectedRound, amounts } });
     closeModal();
-    toast(`Saved chit: ${r.team || 'team'} · ${fmt(r.invested || 0)} Cr invested`, 'ok');
+    toast(`Saved chit: ${r.team || 'team'} — ${fmt(r.invested || 0)} Cr invested`, 'ok');
     const saved = sel;
     await load();
     sel = null;

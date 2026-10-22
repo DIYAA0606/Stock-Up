@@ -1,34 +1,26 @@
-// RedisStore — Upstash Redis implementation of the store interface.
-//
-// Matches FileStore method-for-method so the rest of the application
-// works identically whether running locally or on Vercel Serverless.
-//
-// Redis key schema:
-//   config               STRING   JSON: settings, companies, news, step, etc.
-//   teams                HASH     teamId  → JSON: { id, name }
-//   alloc:{teamId}       HASH     round   → JSON: { amounts, by, at }
-//   coords               HASH     coordId → JSON: { id, code, pinHash, assignedTeams, enabled, createdAt }
-//   audit                LIST     LPUSH JSON events; LTRIM to 1000
-//   board:cache          STRING   JSON string + EX 2s
-//   rate:{key}           ZSET     member: "<ts>:<rand>", score: ts
-
+﻿// RedisStore — Upstash Redis implementation of the store interface.
 import { Redis } from '@upstash/redis';
 import crypto from 'node:crypto';
 import { parseReturnsCsv } from './engine.js';
-import { SEED_CSV } from './seed.js';
+import { loadReturnsCsv } from './seed.js';
 import { hashPin } from './auth.js';
 
 const randPin = () => String(crypto.randomInt(1000, 10000));
 
 function freshConfig() {
-  const companies = parseReturnsCsv(SEED_CSV, 6).map((c, i) => ({ id: `c${i + 1}`, ...c }));
+  const csv = loadReturnsCsv();
+  const companies = parseReturnsCsv(csv, 4).map((c, i) => ({ id: `c${i + 1}`, ...c }));
   const ap = process.env.ADMIN_PIN;
   const cp = process.env.COORDINATOR_PIN;
 
   const settings = {
     startingCapital: '100',
-    rounds: 6,
+    rounds: 4,
     durations: { info: 20, news: 5, investing: 10, entry: 5 },
+    penaltyMode: 'every_quarter',
+    penaltyPercent: 15,
+    minPerStock: '1',
+    rumorFee: '5',
     adminPinHash: ap ? hashPin(ap) : hashPin('1234'),
     coordinatorPinHash: cp ? hashPin(cp) : hashPin('1234'),
   };
@@ -44,16 +36,12 @@ function freshConfig() {
     phaseStartedAt: Date.now(),
     phaseEndsAt: null,
     finalReveal: 0,
+    returnsIsSample: true,
+    returnsWarnings: [],
   };
 }
 
 export class RedisStore {
-  /**
-   * @param {object} [opts]
-   * @param {Redis} [opts.redis] Custom Redis instance (useful for mocking/testing)
-   * @param {string} [opts.url]
-   * @param {string} [opts.token]
-   */
   constructor(opts = {}) {
     if (opts.redis) {
       this.redis = opts.redis;
@@ -67,13 +55,6 @@ export class RedisStore {
     }
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  //  Core state
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  /**
-   * Return the full reconstructed state object.
-   */
   async load() {
     let rawConfig = await this.redis.get('config');
     let config;
@@ -85,23 +66,28 @@ export class RedisStore {
       config = typeof rawConfig === 'string' ? JSON.parse(rawConfig) : rawConfig;
     }
 
-    // Fetch all teams
     const rawTeams = (await this.redis.hgetall('teams')) || {};
     const teams = Object.values(rawTeams).map((t) => (typeof t === 'string' ? JSON.parse(t) : t));
 
-    // Fetch allocations for all teams in parallel using pipeline
     const allocations = {};
+    const rumors = {};
     if (teams.length > 0) {
       const p = this.redis.pipeline();
       for (const t of teams) {
         p.hgetall(`alloc:${t.id}`);
+        p.hgetall(`rumors:${t.id}`);
       }
       const results = await p.exec();
       teams.forEach((t, i) => {
-        const rawAlloc = results[i] || {};
+        const rawAlloc = results[i * 2] || {};
         allocations[t.id] = {};
         for (const [round, val] of Object.entries(rawAlloc)) {
           allocations[t.id][round] = typeof val === 'string' ? JSON.parse(val) : val;
+        }
+        const rawRumors = results[i * 2 + 1] || {};
+        rumors[t.id] = {};
+        for (const [round, val] of Object.entries(rawRumors)) {
+          rumors[t.id][round] = typeof val === 'string' ? JSON.parse(val) : Number(val);
         }
       });
     }
@@ -115,17 +101,16 @@ export class RedisStore {
       nextTeamId: config.nextTeamId ?? teams.length,
       news: config.news || {},
       allocations,
+      rumors,
       step: config.step ?? 0,
       phaseStartedAt: config.phaseStartedAt ?? Date.now(),
       phaseEndsAt: config.phaseEndsAt ?? null,
       finalReveal: config.finalReveal ?? 0,
+      returnsIsSample: config.returnsIsSample ?? true,
+      returnsWarnings: config.returnsWarnings || [],
     };
   }
 
-  /**
-   * Persist state metadata & sync teams.
-   * NOTE: does NOT overwrite alloc:* keys; call saveAlloc() for allocations.
-   */
   async save(st) {
     const config = {
       version: 2,
@@ -138,12 +123,13 @@ export class RedisStore {
       phaseStartedAt: st.phaseStartedAt,
       phaseEndsAt: st.phaseEndsAt,
       finalReveal: st.finalReveal,
+      returnsIsSample: st.returnsIsSample,
+      returnsWarnings: st.returnsWarnings,
     };
 
     const p = this.redis.pipeline();
     p.set('config', JSON.stringify(config));
 
-    // Sync teams hash: replace existing teams hash or update
     p.del('teams');
     if (st.teams && st.teams.length > 0) {
       for (const t of st.teams) {
@@ -154,10 +140,6 @@ export class RedisStore {
     await p.exec();
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  //  Allocations
-  // ═══════════════════════════════════════════════════════════════════════════
-
   async saveAlloc(teamId, round, entry) {
     const p = this.redis.pipeline();
     p.hset(`alloc:${teamId}`, { [String(round)]: JSON.stringify(entry) });
@@ -165,16 +147,20 @@ export class RedisStore {
     await p.exec();
   }
 
-  async deleteAlloc(teamId) {
+  async saveRumors(teamId, round, count) {
     const p = this.redis.pipeline();
-    p.del(`alloc:${teamId}`);
+    p.hset(`rumors:${teamId}`, { [String(round)]: String(count) });
     p.del('board:cache');
     await p.exec();
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  //  Coordinators
-  // ═══════════════════════════════════════════════════════════════════════════
+  async deleteAlloc(teamId) {
+    const p = this.redis.pipeline();
+    p.del(`alloc:${teamId}`);
+    p.del(`rumors:${teamId}`);
+    p.del('board:cache');
+    await p.exec();
+  }
 
   async getCoordinators() {
     const raw = (await this.redis.hgetall('coords')) || {};
@@ -194,10 +180,6 @@ export class RedisStore {
   async deleteCoordinator(coordId) {
     await this.redis.hdel('coords', coordId);
   }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  //  Audit
-  // ═══════════════════════════════════════════════════════════════════════════
 
   async audit(who, action, detail = {}) {
     const line = JSON.stringify({ at: new Date().toISOString(), who, action, ...detail });
@@ -221,19 +203,11 @@ export class RedisStore {
       .filter(Boolean);
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  //  Backups
-  // ═══════════════════════════════════════════════════════════════════════════
-
   async backup(label) {
     const st = await this.load();
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     await this.redis.set(`backup:${stamp}:${label}`, JSON.stringify(st));
   }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  //  Board cache
-  // ═══════════════════════════════════════════════════════════════════════════
 
   async getBoardCache() {
     const val = await this.redis.get('board:cache');
@@ -248,10 +222,6 @@ export class RedisStore {
   async invalidateBoardCache() {
     await this.redis.del('board:cache');
   }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  //  Rate limiting (Sliding window via Redis ZSET)
-  // ═══════════════════════════════════════════════════════════════════════════
 
   async recordFailAndCheck(key, maxHits = 15, windowSec = 60) {
     const redisKey = `rate:${key}`;

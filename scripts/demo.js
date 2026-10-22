@@ -1,4 +1,4 @@
-// Dry run / preview. Uses its own folder (data-demo), never your real data.
+﻿// Dry run / preview. Uses its own folder (data-demo), never your real data.
 //   npm run demo                 24 teams, stops at the start
 //   npm run demo -- 30 12        30 teams, play through to step 12 (0 = start, 24 = final results; each round is 4 steps)
 // Then open http://localhost:3100/display.html  (admin PIN 1111, coordinator PIN 2222)
@@ -37,7 +37,7 @@ const sample = [
   'Regulator probes a tech giant|Compliance costs could weigh on large software firms.',
   'Energy grid upgrade approved|Public funding flows to utilities and builders.',
 ];
-for (let r = 1; r <= 6; r++) {
+for (let r = 1; r <= 4; r++) {
   const [headline, body] = sample[r - 1].split('|');
   await call('/api/admin/news', { round: r, items: [{ headline, body }] });
 }
@@ -51,7 +51,7 @@ const fillRound = async () => {
     const cap = Number(t.capitalStart);
     const k = 3 + Math.floor(rnd() * 4); // 3-6 companies (some teams deliberately under 4)
     const picks = [...ctx.companies].sort(() => rnd() - 0.5).slice(0, k);
-    const share = Math.floor((cap * (0.7 + rnd() * 0.3) * 100) / k) / 100;
+    const share = Math.max(1, Math.floor((cap * (0.7 + rnd() * 0.3) * 100) / k) / 100);
     const amounts = Object.fromEntries(picks.map((c) => [c.id, String(share)]));
     await fetch(base + '/api/entry', { method: 'POST', headers: { 'x-pin': '2222', 'content-type': 'application/json' }, body: JSON.stringify({ teamId: t.id, round: ctx.round, amounts }) }).then(async (r) => { if (!r.ok) throw new Error((await r.json()).error); });
   }
@@ -64,3 +64,4 @@ for (let s = 0; s < toStep; s++) {
 const st = await call('/api/admin/state');
 console.log(`Demo running on ${base}  (${teamCount} teams, now at step ${st.step}: ${st.label}, round ${st.round})`);
 console.log('Admin PIN 1111, coordinator PIN 2222. Ctrl+C to stop.');
+

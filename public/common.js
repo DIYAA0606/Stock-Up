@@ -1,13 +1,13 @@
-export const $ = (s, el = document) => el.querySelector(s);
+﻿export const $ = (s, el = document) => el.querySelector(s);
 export const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-export const fmt = (s) => { const n = Number(s); return (s === null || s === undefined || isNaN(n)) ? '–' : n.toFixed(2); };
+export const fmt = (s) => { const n = Number(s); return (s === null || s === undefined || isNaN(n)) ? 'â€“' : n.toFixed(2); };
 export const pctText = (g) => {
-  const p = Number(g) * 100;
+  const p = Number(g);
   const t = Math.abs(p) < 1e-9 ? '0' : String(Math.round(Math.abs(p) * 1000) / 1000);
-  return (p < 0 ? '−' : '+') + t + '%';
+  return (p < 0 ? 'âˆ’' : '+') + t + '%';
 };
 
-// ─── Token storage (Bearer-token auth, replaces x-pin header) ──────────────
+// â”€â”€â”€ Token storage (Bearer-token auth, replaces x-pin header) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const TOKEN_KEY = 'gtg-token';
 const ROLE_KEY  = 'gtg-role';
 const COORD_KEY = 'gtg-coordId';
@@ -24,12 +24,12 @@ export const setRole    = (r) => sessionStorage.setItem(ROLE_KEY, r);
 export const getCoordId = () => sessionStorage.getItem(COORD_KEY) || '';
 export const setCoordId = (id) => sessionStorage.setItem(COORD_KEY, id);
 
-// Legacy compat shims — any page still calling getPin()/setPin() will work
+// Legacy compat shims â€” any page still calling getPin()/setPin() will work
 export const getPin   = getToken;
 export const setPin   = setToken;
 export const clearPin = clearToken;
 
-// ─── Fetch wrapper ───────────────────────────────────────────────────────────
+// â”€â”€â”€ Fetch wrapper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export async function api(path, { method = 'GET', body } = {}) {
   const headers = { 'Content-Type': 'application/json' };
   const token = getToken();
@@ -52,7 +52,7 @@ export async function api(path, { method = 'GET', body } = {}) {
   return data;
 }
 
-// ─── Toast notifications ─────────────────────────────────────────────────────
+// â”€â”€â”€ Toast notifications â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 let toastTimer;
 export function toast(msg, kind = '') {
   document.querySelector('.toast')?.remove();
@@ -79,7 +79,7 @@ export function makeClock() {
 export const mmss = (s) => (s === null ? '' : `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`);
 
 /**
- * Login gate — resolves with role once a valid session token is stored.
+ * Login gate â€” resolves with role once a valid session token is stored.
  *
  * Supports two modes:
  *  - Admin: shows a single PIN field (code="ADMIN")
@@ -156,3 +156,4 @@ export async function gate(root, { title, allow, coordinator = false }) {
     });
   });
 }
+

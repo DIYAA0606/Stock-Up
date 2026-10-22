@@ -1,9 +1,9 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Guess the Growth – Projector</title>
+<title>Guess the Growth â€“ Projector</title>
 <link rel="stylesheet" href="/style.css">
 </head>
 <body class="display">
@@ -29,11 +29,11 @@ function leaderboard(b) {
   const per = two ? Math.ceil(n / 2) : n;
   const fs = per <= 8 ? 30 : per <= 12 ? 27 : per <= 16 ? 23 : 19;
   const rows = b.teams.map((t) => {
-    if (t.hidden) return `<div class="row-b hid"><span class="rk num">#${t.position}</span><span class="nm">?</span><span class="wv num">–</span><span class="ch"></span></div>`;
+    if (t.hidden) return `<div class="row-b hid"><span class="rk num">#${t.position}</span><span class="nm">?</span><span class="wv num">â€“</span><span class="ch"></span></div>`;
     let ch = '';
-    if (t.change > 0) ch = `<span class="up">▲ ${t.change}</span>`;
-    else if (t.change < 0) ch = `<span class="down">▼ ${-t.change}</span>`;
-    else if (t.change === 0) ch = `<span class="muted">–</span>`;
+    if (t.change > 0) ch = `<span class="up">â–² ${t.change}</span>`;
+    else if (t.change < 0) ch = `<span class="down">â–¼ ${-t.change}</span>`;
+    else if (t.change === 0) ch = `<span class="muted">â€“</span>`;
     return `<div class="row-b ${t.rank === 1 ? 'top1' : ''}"><span class="rk num">${t.rank}</span><span class="nm">${esc(t.name)}</span><span class="wv num">${fmt(t.worth)}</span><span class="ch num">${ch}</span></div>`;
   });
   return `<div class="board ${two ? 'two' : ''}" style="--fs:${fs}px;--rows:${per}">${rows.join('')}</div>`;
@@ -47,7 +47,7 @@ function newsHtml(b) {
 function render() {
   const b = board;
   $label.textContent = b.label;
-  $sub.textContent = b.phase === 'final' ? '' : `Round ${b.round} of ${b.rounds}`;
+  $sub.textContent = b.phase === 'final' ? '' : `Quarter ${b.round} of ${b.rounds}${b.roundName ? ` • ${b.roundName}` : ""}`;
   const main = $main;
   main.className = 'd-main';
   if (b.teams.length > 12) main.classList.add('wide-lb'); // two-column board needs the room for longer team names
@@ -59,12 +59,12 @@ function render() {
   } else if (b.phase === 'revealed') {
     const tiles = b.companies.map((c) => {
       const g = Number(c.growth[b.round - 1]);
-      return `<div class="co tile ${g < 0 ? 'neg' : 'pos'}"><div class="n">${esc(c.name)}</div><div class="g num ${g < 0 ? 'down' : 'up'}">${g < 0 ? '▼' : '▲'} ${pctText(g).replace(/^[+−]/, '')}</div></div>`;
+      return `<div class="co tile ${g < 0 ? 'neg' : 'pos'}"><div class="n">${esc(c.name)}</div><div class="g num ${g < 0 ? 'down' : 'up'}">${g < 0 ? 'â–¼' : 'â–²'} ${pctText(g).replace(/^[+âˆ’]/, '')}</div></div>`;
     });
     main.innerHTML = `<div class="d-col"><h2 class="d-title">Quarter ${b.round} growth</h2><div class="cos">${tiles.join('')}</div></div>${lb}`;
   } else if (b.phase === 'news' && b.round === 1 && !b.news.length) {
     main.classList.add('single');
-    main.innerHTML = `<div class="d-col"><h2 class="d-title">Companies</h2><div class="cos">${b.companies.map((c) => `<div class="co"><div class="n">${esc(c.name)}</div></div>`).join('')}</div></div>`;
+    main.innerHTML = `<div class="d-col"><h2 class="d-title">Stocks</h2><div class="cos">${b.companies.map((c) => `<div class="co"><div class="n">${esc(c.name)}</div></div>`).join('')}</div></div>`;
   } else {
     main.innerHTML = `<div class="d-col"><h2 class="d-title">${b.round === 1 ? 'Company information' : 'News'}</h2>${newsHtml(b)}</div>${lb}`;
   }
@@ -126,3 +126,4 @@ setInterval(tick, 1000);
 </script>
 </body>
 </html>
+

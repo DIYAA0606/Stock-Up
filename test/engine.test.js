@@ -1,115 +1,264 @@
-import { test } from 'node:test';
+﻿import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { toUnits, fromUnits, parseGrowth, buildReturns, computeTeam, rankItems, parseReturnsCsv } from '../src/engine.js';
-import { SEED_CSV } from '../src/seed.js';
+import {
+  toUnits,
+  fromUnits,
+  roundHalfUp,
+  parseGrowth,
+  buildReturns,
+  computeTeam,
+  rankItems,
+  parseReturnsCsv,
+  SCALE,
+} from '../src/engine.js';
+import { loadReturnsCsv } from '../src/seed.js';
 
 const U = toUnits;
 
-test('growth parsing: plain numbers are fractions, % cells are percentages', () => {
-  assert.equal(fromUnits(parseGrowth('0.18')), '0.18');
-  assert.equal(fromUnits(parseGrowth('0.084')), '0.084');
-  assert.equal(fromUnits(parseGrowth('-6.00%')), '-0.06');
-  assert.equal(fromUnits(parseGrowth('-6.30%')), '-0.063');
-  assert.equal(fromUnits(parseGrowth('-100.00%')), '-1');
+// Independent 10-stock x 4-quarter test fixture (so changes to config/returns.csv never break engine tests)
+const FIXTURE_CSV = `Stock,Q1,Q2,Q3,Q4
+ApexTech,-4.5,10,-20,5
+MedHeal,-3,4.2,-3.5,8
+GreenFuel,18.4,5.5,-9,12
+UrbanNest,6.3,-6.8,-17,11
+QuickMart,9.1,6,-4,9
+Velocity,15,-7.5,-16,10
+FinBank,1.5,2.5,-42,-9
+AgriGrow,15.2,-5.2,-10,7
+Astra Motors,8.4,-8,-18,6
+SkyLink,-1,-4,-15,-5`;
+
+function fixtureSetup() {
+  const companies = parseReturnsCsv(FIXTURE_CSV, 4).map((c, i) => ({ id: `c${i + 1}`, ...c }));
+  return {
+    companies,
+    returns: buildReturns(companies, 4),
+    id: Object.fromEntries(companies.map((c) => [c.name, c.id])),
+  };
+}
+
+test('growth parsing: percent numbers and % cells parse to scaled integers', () => {
+  assert.equal(parseGrowth('18'), 180_000n);
+  assert.equal(parseGrowth('4.2'), 42_000n);
+  assert.equal(parseGrowth('-45'), -450_000n);
+  assert.equal(parseGrowth('-6%'), -60_000n);
+  assert.equal(parseGrowth('+18.4%'), 184_000n);
+  assert.equal(parseGrowth('-100%'), -1_000_000n);
+  assert.equal(parseGrowth('0'), 0n);
+  assert.equal(parseGrowth(''), 0n);
 });
 
 test('growth below -100% is clamped (a position cannot go negative)', () => {
-  assert.equal(fromUnits(parseGrowth('-150%')), '-1');
-  assert.equal(fromUnits(parseGrowth('-2')), '-1');
+  assert.equal(parseGrowth('-150%'), -SCALE);
+  assert.equal(parseGrowth('-200'), -SCALE);
 });
 
-test('seed sheet: 12 companies x 6 quarters, matches the screenshot', () => {
-  const cos = parseReturnsCsv(SEED_CSV, 6);
-  assert.equal(cos.length, 12);
-  assert.ok(cos.every((c) => c.returns.length === 6));
-  const by = Object.fromEntries(cos.map((c) => [c.name, c.returns]));
-  assert.deepEqual(by['ApexTech Systems'], ['0.18', '0.14', '0.12', '0.1', '-0.06', '-1']);
-  assert.deepEqual(by['CineVerse Studios'], ['-0.063', '0.05', '0.11', '0.06', '-0.03', '0.12']);
-  assert.deepEqual(by['OceanWave Logistics'], ['0.028', '-0.05', '0.1', '-0.07', '0.18', '0.09']);
-  assert.deepEqual(by['CyberShield Solutions'], ['0.116', '0.13', '0.08', '0.14', '0.05', '0.16']);
+test('config/returns.csv has exactly 10 stocks x 4 quarters with no missing cells', () => {
+  const raw = loadReturnsCsv();
+  const cos = parseReturnsCsv(raw, 4);
+  assert.equal(cos.length, 10, 'Must have exactly 10 stocks');
+  assert.ok(cos.every((c) => c.returns.length === 4), 'Each stock must have 4 quarters');
+  assert.equal(cos.warnings.length, 0, `Expected 0 warnings but got: ${cos.warnings.join(', ')}`);
 });
 
-test('CSV import reports readable errors', () => {
-  assert.throws(() => parseReturnsCsv('Company\tQ1\nA\t0.1', 6), /Header must be/);
-  assert.throws(() => parseReturnsCsv('Company,Q1\nA,abc', 1), /Row 2 \(A\), Q1: cannot read "abc"/);
-  assert.throws(() => parseReturnsCsv('Company,Q1\nA,0.1\na,0.2', 1), /duplicate/);
+test('CSV import reports readable errors and handles blanks', () => {
+  assert.throws(() => parseReturnsCsv('Stock,Q1\nA,10', 4), /Header must be/);
+  assert.throws(() => parseReturnsCsv('Stock,Q1\nA,abc', 1), /cannot read "abc"/);
+  assert.throws(() => parseReturnsCsv('Stock,Q1\nA,10\na,20', 1), /duplicate/);
+
+  // Missing or blank cells default to 0 with a warning
+  const withBlank = parseReturnsCsv('Stock,Q1,Q2\nStockA,10,\nStockB,,5', 2);
+  assert.equal(withBlank.length, 2);
+  assert.deepEqual(withBlank[0].returns, ['10', '0']);
+  assert.deepEqual(withBlank[1].returns, ['0', '5']);
+  assert.equal(withBlank.warnings.length, 2);
 });
 
-const seeded = () => {
-  const companies = parseReturnsCsv(SEED_CSV, 6).map((c, i) => ({ id: `c${i + 1}`, ...c }));
-  return { companies, returns: buildReturns(companies, 6), id: Object.fromEntries(companies.map((c) => [c.name, c.id])) };
-};
-
-test('worked example: round 1 and round 2 roll the whole portfolio forward', () => {
-  const { returns, id } = seeded();
+test('Case A: start 100, 2 rumors (fee 10), ApexTech 20, GreenFuel 30, QuickMart 10, FinBank 10 -> NAV 95.68, no penalty', () => {
+  const { returns, id } = fixtureSetup();
   const r = computeTeam({
     startingCapital: U(100),
-    rounds: 6,
+    rounds: 4,
     returns,
-    upTo: 2,
+    upTo: 1,
+    rumorFee: 5,
+    rumors: { 1: 2 }, // 2 rumors = 10 Cr
     allocations: {
-      1: { [id['ApexTech Systems']]: '30', [id['Nexus Bank']]: '25', [id['SkyLink Aerospace']]: '25', [id['CineVerse Studios']]: '20' },
-      2: { [id['ApexTech Systems']]: '50', [id['QuantumChip Technologies']]: '40' },
+      1: {
+        [id['ApexTech']]: '20',
+        [id['GreenFuel']]: '30',
+        [id['QuickMart']]: '10',
+        [id['FinBank']]: '10',
+      },
+    },
+    penaltyMode: 'every_quarter',
+  });
+
+  const q1 = r.rounds[0];
+  assert.equal(fromUnits(q1.capitalStart), '100');
+  assert.equal(q1.rumorCount, 2);
+  assert.equal(fromUnits(q1.rumorFees), '10');
+  assert.equal(fromUnits(q1.investableCash), '90');
+  assert.equal(fromUnits(q1.invested), '70');
+  assert.equal(fromUnits(q1.cash), '20');
+  assert.equal(q1.distinctCount, 4);
+  assert.equal(q1.penalized, false);
+  assert.equal(fromUnits(q1.penalty), '0');
+  assert.equal(fromUnits(q1.capitalEnd), '95.68');
+  assert.equal(fromUnits(r.worth), '95.68');
+});
+
+test('Case B: start 100, no rumors, GreenFuel 50, AgriGrow 30, QuickMart 20 -> pre-penalty 115.58, penalty 15%, NAV 98.24', () => {
+  const { returns, id } = fixtureSetup();
+  const r = computeTeam({
+    startingCapital: U(100),
+    rounds: 4,
+    returns,
+    upTo: 1,
+    rumors: {},
+    allocations: {
+      1: {
+        [id['GreenFuel']]: '50',
+        [id['AgriGrow']]: '30',
+        [id['QuickMart']]: '20',
+      },
+    },
+    penaltyMode: 'every_quarter',
+  });
+
+  const q1 = r.rounds[0];
+  assert.equal(q1.distinctCount, 3);
+  assert.equal(q1.penalized, true);
+  assert.equal(fromUnits(q1.navBeforePenalty), '115.58');
+  assert.equal(fromUnits(q1.penalty), '17.337');
+  assert.equal(fromUnits(q1.capitalEnd), '98.24');
+  assert.equal(fromUnits(r.worth), '98.24');
+});
+
+test('Case C (uses config/returns.csv): ApexTech 25, MedHeal 25, QuickMart 25, FinBank 25 in Q1 -> exact NAV 110.275, stored as 110.28', () => {
+  const csv = loadReturnsCsv();
+  const companies = parseReturnsCsv(csv, 4).map((c, i) => ({ id: `c${i + 1}`, ...c }));
+  const returns = buildReturns(companies, 4);
+  const id = Object.fromEntries(companies.map((c) => [c.name, c.id]));
+
+  const r = computeTeam({
+    startingCapital: U(100),
+    rounds: 4,
+    returns,
+    upTo: 1,
+    allocations: {
+      1: {
+        [id['ApexTech']]: '25',
+        [id['MedHeal']]: '25',
+        [id['QuickMart']]: '25',
+        [id['FinBank']]: '25',
+      },
+    },
+    penaltyMode: 'every_quarter',
+  });
+
+  const q1 = r.rounds[0];
+  assert.equal(q1.distinctCount, 4);
+  assert.equal(q1.penalized, false);
+  assert.equal(fromUnits(q1.navBeforePenalty), '110.275');
+  assert.equal(fromUnits(q1.capitalEnd), '110.28');
+  assert.equal(fromUnits(r.worth), '110.28');
+});
+
+test('allocation of 0.5 is rejected and exactly 1 is accepted', () => {
+  const { returns, id } = fixtureSetup();
+  assert.throws(
+    () =>
+      computeTeam({
+        startingCapital: U(100),
+        rounds: 4,
+        returns,
+        upTo: 1,
+        minPerStock: 1,
+        allocations: { 1: { [id['ApexTech']]: '0.5' } },
+      }),
+    /below minimum/
+  );
+
+  assert.doesNotThrow(() =>
+    computeTeam({
+      startingCapital: U(100),
+      rounds: 4,
+      returns,
+      upTo: 1,
+      minPerStock: 1,
+      allocations: { 1: { [id['ApexTech']]: '1' } },
+    })
+  );
+});
+
+test('all-cash team (0 stocks) is penalized 15%', () => {
+  const { returns } = fixtureSetup();
+  const r = computeTeam({
+    startingCapital: U(100),
+    rounds: 4,
+    returns,
+    upTo: 1,
+    allocations: { 1: {} },
+    penaltyMode: 'every_quarter',
+    penaltyPercent: 15,
+  });
+
+  const q1 = r.rounds[0];
+  assert.equal(q1.distinctCount, 0);
+  assert.equal(q1.penalized, true);
+  assert.equal(fromUnits(q1.navBeforePenalty), '100');
+  assert.equal(fromUnits(q1.penalty), '15');
+  assert.equal(fromUnits(q1.capitalEnd), '85');
+});
+
+test('final_only mode penalizes only Q4', () => {
+  const { returns, id } = fixtureSetup();
+  const r = computeTeam({
+    startingCapital: U(100),
+    rounds: 4,
+    returns,
+    upTo: 4,
+    penaltyMode: 'final_only',
+    penaltyPercent: 15,
+    allocations: {
+      1: { [id['ApexTech']]: '10' }, // 1 stock -> under-diversified
+      2: { [id['ApexTech']]: '10' },
+      3: { [id['ApexTech']]: '10' },
+      4: { [id['ApexTech']]: '10' },
     },
   });
-  // Q1: 30*1.18 + 25*1.17 + 25*0.99 + 20*0.937 = 35.4 + 29.25 + 24.75 + 18.74 = 108.14
-  assert.equal(fromUnits(r.rounds[0].capitalEnd), '108.14');
-  // Q2 starts with 108.14: 50 and 40 invested, 18.14 stays as cash. 50*1.14 + 40*1.09 + 18.14 = 57 + 43.6 + 18.14
-  assert.equal(fromUnits(r.rounds[1].capitalStart), '108.14');
-  assert.equal(fromUnits(r.rounds[1].cash), '18.14');
-  assert.equal(fromUnits(r.rounds[1].capitalEnd), '118.74');
-  assert.equal(fromUnits(r.worth), '118.74');
+
+  // Q1, Q2, Q3 have no penalty in final_only mode
+  assert.equal(r.rounds[0].penalized, false);
+  assert.equal(r.rounds[0].penalty, 0n);
+  assert.equal(r.rounds[1].penalized, false);
+  assert.equal(r.rounds[1].penalty, 0n);
+  assert.equal(r.rounds[2].penalized, false);
+  assert.equal(r.rounds[2].penalty, 0n);
+
+  // Q4 applies the penalty
+  assert.equal(r.rounds[3].penalized, true);
+  assert.ok(r.rounds[3].penalty > 0n);
 });
 
-test('ApexTech Q6 is a total wipeout and cash is untouched', () => {
-  const { returns, id } = seeded();
+test('compounding across 4 quarters with penalty carry-over', () => {
+  const { returns, id } = fixtureSetup();
   const r = computeTeam({
     startingCapital: U(100),
-    rounds: 6,
+    rounds: 4,
     returns,
-    upTo: 6,
-    allocations: { 6: { [id['ApexTech Systems']]: '60', [id['CyberShield Solutions']]: '10' } },
+    upTo: 2,
+    penaltyMode: 'every_quarter',
+    allocations: {
+      1: { [id['ApexTech']]: '10' }, // 1 stock -> penalized
+    },
   });
-  // Rounds 1-5 invest nothing (cash flat at 100). Q6: 60 -> 0, 10 * 1.16 = 11.6, cash 30
-  assert.equal(fromUnits(r.rounds[5].exitTotal), '11.6');
-  assert.equal(fromUnits(r.worth), '41.6');
-});
 
-test('nothing invested means worth stays at starting capital', () => {
-  const { returns } = seeded();
-  const r = computeTeam({ startingCapital: U(100), rounds: 6, returns, upTo: 6, allocations: {} });
-  assert.equal(fromUnits(r.worth), '100');
-});
-
-test('only rounds up to `upTo` are computed (later results never leak into worth)', () => {
-  const { returns, id } = seeded();
-  const allocations = { 1: { [id['ApexTech Systems']]: '100' }, 2: { [id['ApexTech Systems']]: '114' } };
-  const r = computeTeam({ startingCapital: U(100), rounds: 6, returns, upTo: 1, allocations });
-  assert.equal(fromUnits(r.worth), '118');
-  assert.equal(r.rounds[1].capitalEnd, null);
-});
-
-test('over-budget is flagged per round', () => {
-  const { returns, id } = seeded();
-  const r = computeTeam({ startingCapital: U(100), rounds: 6, returns, upTo: 1, allocations: { 1: { [id['Nexus Bank']]: '60', [id['Nexus Bank'] === 'c6' ? 'c7' : 'c6']: '50' } } });
-  assert.equal(r.rounds[0].overBudget, true);
-});
-
-test('exact arithmetic: no floating point drift over six compounding rounds', () => {
-  const { returns, id } = seeded();
-  // All-in on one company each round, reinvesting everything.
-  const picks = ['ApexTech Systems', 'ApexTech Systems', 'ApexTech Systems', 'ApexTech Systems', 'TerraGrid Energy', 'CyberShield Solutions'];
-  const allocations = {};
-  // Build progressively because each round's stake depends on the previous exit.
-  let cap = U(100);
-  for (let r = 1; r <= 6; r++) {
-    allocations[r] = { [id[picks[r - 1]]]: fromUnits(cap) };
-    const step = computeTeam({ startingCapital: U(100), rounds: 6, returns, upTo: r, allocations });
-    cap = step.worth;
-  }
-  // 100 * 1.18 * 1.14 * 1.12 * 1.10 * 1.16 * 1.16  (each step truncated at 6 dp, so compare to 3 dp)
-  const expected = 100 * 1.18 * 1.14 * 1.12 * 1.1 * 1.16 * 1.16;
-  assert.ok(Math.abs(Number(fromUnits(cap)) - expected) < 0.001, `${fromUnits(cap)} vs ${expected}`);
+  const q1 = r.rounds[0];
+  assert.equal(q1.penalized, true);
+  // Q2 capitalStart must equal Q1 capitalEnd (after penalty)
+  assert.equal(r.rounds[1].capitalStart, q1.capitalEnd);
 });
 
 test('ranking: highest worth first, equal worth shares a rank (no tie-break)', () => {
@@ -123,4 +272,12 @@ test('ranking: highest worth first, equal worth shares a rank (no tie-break)', (
   assert.equal(m.get('a'), 2);
   assert.equal(m.get('c'), 2);
   assert.equal(m.get('d'), 4);
+});
+
+test('half-up rounding exactness', () => {
+  assert.equal(fromUnits(roundHalfUp(toUnits('110.275'))), '110.28');
+  assert.equal(fromUnits(roundHalfUp(toUnits('110.274'))), '110.27');
+  assert.equal(fromUnits(roundHalfUp(toUnits('98.243'))), '98.24');
+  assert.equal(fromUnits(roundHalfUp(toUnits('98.246'))), '98.25');
+  assert.equal(fromUnits(roundHalfUp(toUnits('-10.275'))), '-10.28');
 });

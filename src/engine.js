@@ -1,5 +1,6 @@
-// Calculation engine. All money and growth values are exact BigInt integers scaled by 1e-6
-// (1 Cr = 1_000_000 units, +18% = 180_000 units). Nothing here is rounded; rounding is display-only.
+﻿// Calculation engine. All money and growth values are exact BigInt integers scaled by 1e-6
+// (1 Cr = 1_000_000 units, +18% = 180_000 units).
+// Quarter closing NAVs are rounded half-up to 2 decimals in Cr (10_000 units).
 
 export const SCALE = 1_000_000n;
 
@@ -27,19 +28,30 @@ export function fromUnits(u) {
   return (neg ? '-' : '') + i.toString() + (f ? '.' + f : '');
 }
 
+/** Round scaled BigInt to 2 decimals in Cr (half-up: nearest 10_000 units). */
+export function roundHalfUp(u) {
+  if (u >= 0n) {
+    return ((u + 5_000n) / 10_000n) * 10_000n;
+  } else {
+    return -(((-u + 5_000n) / 10_000n) * 10_000n);
+  }
+}
+
 /**
- * Parse one growth cell from the sheet.
- *  "0.18"     -> +18%   (plain numbers are fractions)
- *  "-0.06"    -> -6%
- *  "-6.00%"   -> -6%    (anything with a % sign is a percentage)
- *  "-100.00%" -> -100%
+ * Parse one growth cell from the sheet (percent change per quarter).
+ *  "18"       -> +18%  (scaled: 180_000n)
+ *  "4.2"      -> +4.2% (scaled: 42_000n)
+ *  "-45"      -> -45%  (scaled: -450_000n)
+ *  "-100%"    -> -100% (scaled: -1_000_000n)
  * Values below -100% are clamped to -100% (a position cannot go below zero).
  */
 export function parseGrowth(token) {
-  const t = String(token).trim();
-  let u;
-  if (t.endsWith('%')) u = toUnits(t.slice(0, -1)) / 100n;
-  else u = toUnits(t);
+  if (token === undefined || token === null) return 0n;
+  let t = String(token).trim();
+  if (t === '') return 0n;
+  if (t.endsWith('%')) t = t.slice(0, -1).trim();
+  if (t.startsWith('+')) t = t.slice(1).trim();
+  const u = toUnits(t) / 100n;
   return u < -SCALE ? -SCALE : u;
 }
 
@@ -60,41 +72,79 @@ export function buildReturns(companies, rounds) {
 /**
  * Walk one team through the rounds.
  *  - allocations: { [round]: { [companyId]: "amount in Cr" } }
+ *  - rumors: { [round]: count }
  *  - upTo: number of rounds whose results are known (exit values are computed for rounds <= upTo)
- * Round r: capitalStart -> invest amounts, rest stays as cash (flat) -> exit = amount * (1 + growth)
- *          capitalEnd = cash + sum(exit). capitalEnd becomes next round's capitalStart.
+ *  - penaltyMode: 'every_quarter' | 'final_only'
+ *  - penaltyPercent: 15 (deduct 15% of total NAV when distinct stocks < 4)
+ *  - minPerStock: 1 (each allocation must be 0 or >= 1 Cr)
+ *  - rumorFee: 5 (deducted immediately from available cash per rumor)
  */
-export function computeTeam({ startingCapital, rounds, returns, allocations, upTo }) {
+export function computeTeam({
+  startingCapital,
+  rounds = 4,
+  returns,
+  allocations = {},
+  rumors = {},
+  upTo,
+  penaltyMode = 'every_quarter',
+  penaltyPercent = 15,
+  minPerStock = 1,
+  rumorFee = 5,
+}) {
   let capital = startingCapital;
   const out = [];
+  const feePerRumor = toUnits(rumorFee);
+  const penRate = toUnits(penaltyPercent) / 100n;
+  const minUnits = toUnits(minPerStock);
+
   for (let r = 1; r <= rounds; r++) {
     const alloc = allocations[r];
+    const rumorCount = Number(rumors?.[r] || 0);
+    const rumorFees = BigInt(rumorCount) * feePerRumor;
+    const investableCash = capital - rumorFees;
+
     const amounts = {};
     let invested = 0n;
+    let distinctCount = 0;
     if (alloc) {
       for (const [cid, v] of Object.entries(alloc)) {
         const u = toUnits(v);
         if (u < 0n) throw new Error('Negative investment amount');
         if (u > 0n) {
+          if (u < minUnits) {
+            throw new Error(`Investment below minimum of ${fromUnits(minUnits)} Cr`);
+          }
           amounts[cid] = u;
           invested += u;
+          distinctCount++;
         }
       }
     }
+    const cashLeft = investableCash - invested;
+    const overBudget = invested > investableCash || cashLeft < 0n;
+
     const row = {
       round: r,
       entered: !!alloc,
       capitalStart: capital,
+      rumorCount,
+      rumorFees,
+      investableCash,
       invested,
-      cash: capital - invested,
+      cash: cashLeft,
+      distinctCount,
       amounts,
       lines: [],
       exitTotal: null,
+      navBeforePenalty: null,
+      penalized: false,
+      penalty: null,
       capitalEnd: null,
-      overBudget: invested > capital,
+      overBudget,
     };
     out.push(row);
     if (r > upTo) break;
+
     let exitTotal = 0n;
     for (const [cid, amt] of Object.entries(amounts)) {
       let g = returns[r - 1]?.[cid] ?? 0n;
@@ -104,8 +154,28 @@ export function computeTeam({ startingCapital, rounds, returns, allocations, upT
       exitTotal += exit;
     }
     row.exitTotal = exitTotal;
-    row.capitalEnd = row.cash + exitTotal;
-    capital = row.capitalEnd;
+    const navBeforePenalty = cashLeft + exitTotal;
+    row.navBeforePenalty = navBeforePenalty;
+
+    const isUnderDiversified = distinctCount < 4;
+    let applyPenalty = false;
+    if (isUnderDiversified) {
+      if (penaltyMode === 'every_quarter') applyPenalty = true;
+      else if (penaltyMode === 'final_only' && r === rounds) applyPenalty = true;
+    }
+
+    let penalty = 0n;
+    if (applyPenalty && navBeforePenalty > 0n) {
+      penalty = (navBeforePenalty * penRate) / SCALE;
+    }
+    row.penalized = isUnderDiversified && applyPenalty;
+    row.penalty = penalty;
+
+    const navAfterPenalty = navBeforePenalty - penalty;
+    // Quarter closing NAV is rounded to 2 decimals (half-up)
+    const closingNav = roundHalfUp(navAfterPenalty);
+    row.capitalEnd = closingNav;
+    capital = closingNav;
   }
   const done = out.filter((x) => x.capitalEnd !== null);
   return { rounds: out, worth: done.length ? done[done.length - 1].capitalEnd : startingCapital };
@@ -122,30 +192,49 @@ export function rankItems(items) {
   return m;
 }
 
-/** Parse a pasted sheet (tab or comma separated): Company, Q1..Qn. */
-export function parseReturnsCsv(text, rounds) {
+/** Parse a pasted sheet (tab or comma separated): Stock, Q1..Qn. */
+export function parseReturnsCsv(text, rounds = null) {
   const lines = String(text).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  if (lines.length < 2) throw new Error('Need a header row and at least one company row');
+  if (lines.length < 2) throw new Error('Need a header row and at least one stock row');
   const split = (l) => (l.includes('\t') ? l.split('\t') : l.split(',')).map((x) => x.trim().replace(/^"|"$/g, ''));
   const header = split(lines[0]);
-  if (header.length !== rounds + 1) throw new Error(`Header must be Company plus ${rounds} quarter columns (found ${header.length} columns)`);
+  const detectedRounds = header.length - 1;
+  const numRounds = rounds !== null ? Number(rounds) : detectedRounds;
+  if (header.length !== numRounds + 1) {
+    throw new Error(`Header must be Stock plus ${numRounds} quarter columns (found ${header.length} columns)`);
+  }
   const companies = [];
+  const warnings = [];
   const seen = new Set();
   lines.slice(1).forEach((line, idx) => {
     const cells = split(line);
     const name = cells[0];
-    if (!name) throw new Error(`Row ${idx + 2}: missing company name`);
-    if (seen.has(name.toLowerCase())) throw new Error(`Row ${idx + 2}: duplicate company "${name}"`);
+    if (!name) throw new Error(`Row ${idx + 2}: missing stock name`);
+    if (seen.has(name.toLowerCase())) throw new Error(`Row ${idx + 2}: duplicate stock "${name}"`);
     seen.add(name.toLowerCase());
-    if (cells.length !== rounds + 1) throw new Error(`Row ${idx + 2} (${name}): expected ${rounds} values, found ${cells.length - 1}`);
-    const returns = cells.slice(1).map((tok, q) => {
-      try {
-        return fromUnits(parseGrowth(tok));
-      } catch {
-        throw new Error(`Row ${idx + 2} (${name}), Q${q + 1}: cannot read "${tok}"`);
+    if (cells.length !== numRounds + 1) {
+      throw new Error(`Row ${idx + 2} (${name}): expected ${numRounds} values, found ${cells.length - 1}`);
+    }
+    const returns = [];
+    for (let q = 0; q < numRounds; q++) {
+      const tok = cells[q + 1];
+      if (tok === undefined || tok === null || String(tok).trim() === '') {
+        warnings.push(`Row ${idx + 2} (${name}), Q${q + 1}: missing value defaulted to 0%`);
+        returns.push('0');
+      } else {
+        try {
+          parseGrowth(tok);
+          let s = String(tok).trim();
+          if (s.endsWith('%')) s = s.slice(0, -1).trim();
+          if (s.startsWith('+')) s = s.slice(1).trim();
+          returns.push(s);
+        } catch {
+          throw new Error(`Row ${idx + 2} (${name}), Q${q + 1}: cannot read "${tok}"`);
+        }
       }
-    });
+    }
     companies.push({ name, returns });
   });
+  companies.warnings = warnings;
   return companies;
 }
