@@ -90,7 +90,7 @@ export class FileStore {
    * Persist the full state object.
    * NOTE: does NOT save allocations — call saveAlloc() for per-team chit writes.
    */
-  async save(st) {
+  async save(st = this.state) {
     this.state = st;
     this._writeState();
     await this.invalidateBoardCache();

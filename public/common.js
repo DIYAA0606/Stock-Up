@@ -133,9 +133,9 @@ export async function gate(root, { title, allow, coordinator = false }) {
 
       let code, pin;
       if (showCoordFields) {
-        code = (root.querySelector('#coord-code')?.value || '').trim().toUpperCase();
+        code = (root.querySelector('#coord-code')?.value || '').trim().toUpperCase() || 'C01';
         pin  = (root.querySelector('#coord-pin')?.value  || '').trim();
-        if (!code || !pin) { msgEl.textContent = 'Enter your coordinator code and PIN.'; return; }
+        if (!pin) { msgEl.textContent = 'Please enter your PIN.'; return; }
       } else {
         code = 'ADMIN';
         pin  = (root.querySelector('#admin-pin')?.value || '').trim();

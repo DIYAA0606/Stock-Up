@@ -194,12 +194,34 @@ export function createRequestHandler(store) {
       const coords = await store.getCoordinators();
       const coord = coords.find((c) => c.code.toUpperCase() === code);
       if (!coord || !coord.enabled) {
+        const st = await store.load();
+        if (st.settings.coordinatorPinHash && checkPin(pin, st.settings.coordinatorPinHash)) {
+          const token = signToken({ role: 'coordinator', coordId: code || 'legacy' });
+          await store.audit(code || 'LEGACY_COORD', 'login', { ip });
+          return json(res, 200, { token, role: 'coordinator', coordId: code || 'legacy' });
+        }
+        if (st.settings.adminPinHash && checkPin(pin, st.settings.adminPinHash)) {
+          const token = signToken({ role: 'admin', coordId: 'ADMIN' });
+          await store.audit('ADMIN', 'login', { ip });
+          return json(res, 200, { token, role: 'admin' });
+        }
         await store.recordFailAndCheck(`ip:${ip}`, 15, 60);
         await store.recordFailAndCheck(`code:${code}`, 10, 60);
         throw new app.HttpError(401, 'Invalid coordinator code or PIN');
       }
       const validCoord = checkPin(pin, coord.pinHash);
       if (!validCoord) {
+        const st = await store.load();
+        if (st.settings.coordinatorPinHash && checkPin(pin, st.settings.coordinatorPinHash)) {
+          const token = signToken({ role: 'coordinator', coordId: coord.id });
+          await store.audit(coord.code, 'login', { ip });
+          return json(res, 200, { token, role: 'coordinator', coordId: coord.id });
+        }
+        if (st.settings.adminPinHash && checkPin(pin, st.settings.adminPinHash)) {
+          const token = signToken({ role: 'admin', coordId: 'ADMIN' });
+          await store.audit('ADMIN', 'login', { ip });
+          return json(res, 200, { token, role: 'admin' });
+        }
         await store.recordFailAndCheck(`ip:${ip}`, 15, 60);
         await store.recordFailAndCheck(`code:${code}`, 10, 60);
         throw new app.HttpError(401, 'Invalid coordinator code or PIN');
