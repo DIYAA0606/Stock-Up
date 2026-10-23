@@ -15,24 +15,24 @@ import { loadReturnsCsv } from '../src/seed.js';
 
 const U = toUnits;
 
-// Independent 10-stock x 4-quarter test fixture (so changes to config/returns.csv never break engine tests)
-const FIXTURE_CSV = `Stock,Q1,Q2,Q3,Q4
-ApexTech,-4.5,10,-20,5
-MedHeal,-3,4.2,-3.5,8
-GreenFuel,18.4,5.5,-9,12
-UrbanNest,6.3,-6.8,-17,11
-QuickMart,9.1,6,-4,9
-Velocity,15,-7.5,-16,10
-FinBank,1.5,2.5,-42,-9
-AgriGrow,15.2,-5.2,-10,7
-Astra Motors,8.4,-8,-18,6
-SkyLink,-1,-4,-15,-5`;
+// Independent 10-stock x 3-quarter test fixture (so changes to config/returns.csv never break engine tests)
+const FIXTURE_CSV = `Stock,Q1,Q2,Q3
+ApexTech,-4.5,10,-20
+MedHeal,-3,4.2,-3.5
+GreenFuel,18.4,5.5,-9
+UrbanNest,6.3,-6.8,-17
+QuickMart,9.1,6,-4
+Velocity,15,-7.5,-16
+FinBank,1.5,2.5,-42
+AgriGrow,15.2,-5.2,-10
+Astra Motors,8.4,-8,-18
+SkyLink,-1,-4,-15`;
 
 function fixtureSetup() {
-  const companies = parseReturnsCsv(FIXTURE_CSV, 4).map((c, i) => ({ id: `c${i + 1}`, ...c }));
+  const companies = parseReturnsCsv(FIXTURE_CSV, 3).map((c, i) => ({ id: `c${i + 1}`, ...c }));
   return {
     companies,
-    returns: buildReturns(companies, 4),
+    returns: buildReturns(companies, 3),
     id: Object.fromEntries(companies.map((c) => [c.name, c.id])),
   };
 }
@@ -53,16 +53,16 @@ test('growth below -100% is clamped (a position cannot go negative)', () => {
   assert.equal(parseGrowth('-200'), -SCALE);
 });
 
-test('config/returns.csv has exactly 10 stocks x 4 quarters with no missing cells', () => {
+test('config/returns.csv has exactly 10 stocks x 3 quarters with no missing cells', () => {
   const raw = loadReturnsCsv();
-  const cos = parseReturnsCsv(raw, 4);
+  const cos = parseReturnsCsv(raw, 3);
   assert.equal(cos.length, 10, 'Must have exactly 10 stocks');
-  assert.ok(cos.every((c) => c.returns.length === 4), 'Each stock must have 4 quarters');
+  assert.ok(cos.every((c) => c.returns.length === 3), 'Each stock must have 3 quarters');
   assert.equal(cos.warnings.length, 0, `Expected 0 warnings but got: ${cos.warnings.join(', ')}`);
 });
 
 test('CSV import reports readable errors and handles blanks', () => {
-  assert.throws(() => parseReturnsCsv('Stock,Q1\nA,10', 4), /Header must be/);
+  assert.throws(() => parseReturnsCsv('Stock,Q1,Q2,Q3,Q4\nA,10,20,30,40', 3), /Header must be/);
   assert.throws(() => parseReturnsCsv('Stock,Q1\nA,abc', 1), /cannot read "abc"/);
   assert.throws(() => parseReturnsCsv('Stock,Q1\nA,10\na,20', 1), /duplicate/);
 
@@ -78,7 +78,7 @@ test('Case A: start 100, 2 rumors (fee 10), ApexTech 20, GreenFuel 30, QuickMart
   const { returns, id } = fixtureSetup();
   const r = computeTeam({
     startingCapital: U(100),
-    rounds: 4,
+    rounds: 3,
     returns,
     upTo: 1,
     rumorFee: 5,
@@ -112,7 +112,7 @@ test('Case B: start 100, no rumors, GreenFuel 50, AgriGrow 30, QuickMart 20 -> p
   const { returns, id } = fixtureSetup();
   const r = computeTeam({
     startingCapital: U(100),
-    rounds: 4,
+    rounds: 3,
     returns,
     upTo: 1,
     rumors: {},
@@ -137,13 +137,13 @@ test('Case B: start 100, no rumors, GreenFuel 50, AgriGrow 30, QuickMart 20 -> p
 
 test('Case C (uses config/returns.csv): ApexTech 25, MedHeal 25, QuickMart 25, FinBank 25 in Q1 -> exact NAV 110.275, stored as 110.28', () => {
   const csv = loadReturnsCsv();
-  const companies = parseReturnsCsv(csv, 4).map((c, i) => ({ id: `c${i + 1}`, ...c }));
-  const returns = buildReturns(companies, 4);
+  const companies = parseReturnsCsv(csv, 3).map((c, i) => ({ id: `c${i + 1}`, ...c }));
+  const returns = buildReturns(companies, 3);
   const id = Object.fromEntries(companies.map((c) => [c.name, c.id]));
 
   const r = computeTeam({
     startingCapital: U(100),
-    rounds: 4,
+    rounds: 3,
     returns,
     upTo: 1,
     allocations: {
@@ -171,7 +171,7 @@ test('allocation of 0.5 is rejected and exactly 1 is accepted', () => {
     () =>
       computeTeam({
         startingCapital: U(100),
-        rounds: 4,
+        rounds: 3,
         returns,
         upTo: 1,
         minPerStock: 1,
@@ -183,7 +183,7 @@ test('allocation of 0.5 is rejected and exactly 1 is accepted', () => {
   assert.doesNotThrow(() =>
     computeTeam({
       startingCapital: U(100),
-      rounds: 4,
+      rounds: 3,
       returns,
       upTo: 1,
       minPerStock: 1,
@@ -196,7 +196,7 @@ test('all-cash team (0 stocks) is penalized 15%', () => {
   const { returns } = fixtureSetup();
   const r = computeTeam({
     startingCapital: U(100),
-    rounds: 4,
+    rounds: 3,
     returns,
     upTo: 1,
     allocations: { 1: {} },
@@ -212,41 +212,36 @@ test('all-cash team (0 stocks) is penalized 15%', () => {
   assert.equal(fromUnits(q1.capitalEnd), '85');
 });
 
-test('final_only mode penalizes only Q4', () => {
+test('final_only mode penalizes only Q3', () => {
   const { returns, id } = fixtureSetup();
   const r = computeTeam({
     startingCapital: U(100),
-    rounds: 4,
+    rounds: 3,
     returns,
-    upTo: 4,
+    upTo: 3,
     penaltyMode: 'final_only',
     penaltyPercent: 15,
     allocations: {
       1: { [id['ApexTech']]: '10' }, // 1 stock -> under-diversified
       2: { [id['ApexTech']]: '10' },
       3: { [id['ApexTech']]: '10' },
-      4: { [id['ApexTech']]: '10' },
     },
   });
 
-  // Q1, Q2, Q3 have no penalty in final_only mode
+  // Q1 and Q2 have no penalty in final_only mode
   assert.equal(r.rounds[0].penalized, false);
   assert.equal(r.rounds[0].penalty, 0n);
   assert.equal(r.rounds[1].penalized, false);
   assert.equal(r.rounds[1].penalty, 0n);
-  assert.equal(r.rounds[2].penalized, false);
-  assert.equal(r.rounds[2].penalty, 0n);
-
-  // Q4 applies the penalty
-  assert.equal(r.rounds[3].penalized, true);
-  assert.ok(r.rounds[3].penalty > 0n);
+  assert.equal(r.rounds[2].penalized, true);
+  assert.ok(r.rounds[2].penalty > 0n);
 });
 
-test('compounding across 4 quarters with penalty carry-over', () => {
+test('compounding across 3 quarters with penalty carry-over', () => {
   const { returns, id } = fixtureSetup();
   const r = computeTeam({
     startingCapital: U(100),
-    rounds: 4,
+    rounds: 3,
     returns,
     upTo: 2,
     penaltyMode: 'every_quarter',

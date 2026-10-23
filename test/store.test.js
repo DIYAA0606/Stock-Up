@@ -14,7 +14,7 @@ test('FileStore: fresh state initializes 10 companies and valid settings', async
   const store = new FileStore(tmpDir());
   const st = await store.load();
   assert.equal(st.companies.length, 10);
-  assert.equal(st.settings.rounds, 4);
+  assert.equal(st.settings.rounds, 3);
   assert.equal(st.settings.startingCapital, '100');
   assert.ok(st.settings.adminPinHash);
   assert.ok(st.settings.coordinatorPinHash);

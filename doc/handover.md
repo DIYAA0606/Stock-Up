@@ -100,7 +100,7 @@ ADMIN_PIN=9434 COORDINATOR_PIN=5121 npm start
 4. **Data Verification in `/admin.html`:**
    * Open `http://<HOST_IP>:3000/admin.html` and enter the **Admin PIN**.
    * **Teams Tab:** Paste the confirmed registered team list, one per line.
-   * **News Tab:** Verify news headlines for all 6 rounds are populated.
+   * **News Tab:** Verify news headlines for all 3 rounds are populated.
    * **Growth Tab:** Verify the final company returns matrix matches the secret spreadsheet.
    * Click **Reset Event** to ensure fresh clean state for Round 1.
 
@@ -142,9 +142,9 @@ The entry form is built specifically for ultra-fast, mouse-free numeric entry:
 
 ---
 
-### 4.4 Final Results Reveal (Post Round 6)
+### 4.4 Final Results Reveal (Post Round 3)
 
-When Round 6 Quarter Results conclude, clicking **Next Phase** enters **Final Results** mode:
+When Round 3 Quarter Results conclude, clicking **Next Phase** enters **Final Results** mode:
 * The projector switches to a dramatic podium screen.
 * In `/admin.html`, click **Reveal Next Team** to step backwards through the leaderboard from last place to 1st place (winner).
 

@@ -81,7 +81,7 @@ export function buildReturns(companies, rounds) {
  */
 export function computeTeam({
   startingCapital,
-  rounds = 4,
+  rounds = 3,
   returns,
   allocations = {},
   rumors = {},

@@ -1,11 +1,11 @@
-Stock,Q1,Q2,Q3,Q4
-ApexTech,18,22,-45,-12
-MedHeal,-3,4.2,-3.5,8
-GreenFuel,4.5,5.5,-9,12
-UrbanNest,6.3,-6.8,-17,11
-QuickMart,9.1,6,-4,9
-Velocity,15,-7.5,-16,10
-FinBank,17,2.5,-42,-9
-AgriGrow,5,-5.2,-10,7
-Astra Motors,8.4,-8,-18,6
-SkyLink,-1,-4,-15,-5
+Stock,Q1,Q2,Q3
+ApexTech,18,22,-45
+MedHeal,-3,4.2,-3.5
+GreenFuel,4.5,5.5,-9
+UrbanNest,6.3,-6.8,-17
+QuickMart,9.1,6,-4
+Velocity,15,-7.5,-16
+FinBank,17,2.5,-42
+AgriGrow,5,-5.2,-10
+Astra Motors,8.4,-8,-18
+SkyLink,-1,-4,-15

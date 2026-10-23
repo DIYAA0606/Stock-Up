@@ -37,7 +37,7 @@ test('starts at Quarter 1 information release with everyone on starting capital 
   const st = fresh();
   const b = board(st);
   assert.equal(b.round, 1);
-  assert.equal(b.rounds, 4);
+  assert.equal(b.rounds, 3);
   assert.equal(b.entryOpen, false);
   assert.ok(b.teams.every((t) => t.worth === '100'));
   assert.ok(b.companies.every((c) => c.growth.length === 0));
@@ -208,7 +208,7 @@ test('final results are revealed from last place upward, one step at a time', ()
   enter(st, 'Alpha', 1, { [APEX]: '25', [MEDHEAL]: '25', [QUICKMART]: '25', [FINBANK]: '25' });
   enter(st, 'Beta', 1, { [APEX]: '100' });
   app.advance(st, { force: true });
-  goTo(st, 4, 'revealed');
+  goTo(st, 3, 'revealed');
   app.advance(st, { force: true }); // final
   assert.equal(board(st).phase, 'final');
   assert.deepEqual(board(st).teams.map((t) => !!t.hidden), [true, true, true]);
@@ -219,8 +219,13 @@ test('final results are revealed from last place upward, one step at a time', ()
   assert.throws(() => app.advance(st), /final/);
 });
 
-test('timeline has 4 steps per round plus the final: 17 steps for 4 rounds', () => {
-  assert.equal(app.steps(4).length, 17);
+test('timeline has four steps per quarter plus final results', () => {
+  assert.equal(app.steps().length, 13);
+  assert.deepEqual(
+    app.steps().filter((step) => step.phase === 'revealed').map((step) => step.round),
+    [1, 2, 3]
+  );
+  assert.deepEqual(app.steps().at(-1), { round: 3, phase: 'final' });
 });
 
 test('reset clears chits, rumors and goes back to start, keeping teams', () => {
@@ -247,4 +252,3 @@ test('CSV export contains exact required columns', () => {
   assert.match(lines[0], /^Team,Coordinator,Quarter,RumorCount,RumorFees,Allocation:ApexTech/);
   assert.match(lines[1], /^Alpha,Unassigned,1,1,5,/);
 });
-

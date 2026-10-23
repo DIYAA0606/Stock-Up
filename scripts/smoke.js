@@ -80,16 +80,16 @@ try {
   console.log('\nStarting smoke test...\n');
   let server = await startServer();
 
-  // ======== CHECK 1: Matrix 10x4 ========
+  // ======== CHECK 1: Matrix 10x3 ========
   const retCsv = fs.readFileSync(path.join(ROOT, 'config', 'returns.csv'), 'utf8');
   const retLines = retCsv.trim().split(/\r?\n/).filter(Boolean);
   check('1.1 returns.csv has 10 stocks', retLines.length - 1 === 10, retLines.length - 1, 10);
   const cols = retLines[0].split(',').length - 1;
-  check('1.2 returns.csv has 4 quarters', cols === 4, cols, 4);
+  check('1.2 returns.csv has 3 quarters', cols === 3, cols, 3);
 
   const stateRes = await admin('GET', 'state');
   check('1.3 state has 10 companies', stateRes.data.companies.length === 10, stateRes.data.companies.length, 10);
-  check('1.4 state has 4 rounds', stateRes.data.settings.rounds === 4, stateRes.data.settings.rounds, 4);
+  check('1.4 state has 3 rounds', stateRes.data.settings.rounds === 3, stateRes.data.settings.rounds, 3);
 
   // ======== CHECK 2: Coordinators ========
   await admin('POST', 'teams', { names: ['AlphaTeam', 'BetaTeam'] });
@@ -200,32 +200,6 @@ try {
   // Expected pre-penalty 107.43, penalty -15% -> 91.32
   check('3.9 Q3 NAV = 91.32 (penalized)', Math.abs(q3nav - 91.32) < 0.02, q3nav, 91.32);
   check('3.10 Q3 penalty applied', admMt.penalized === true, admMt.penalized, true);
-
-  // --- Q4 ---
-  await advancePhase(); // revealed -> news (Q4)
-  await advancePhase(); // news -> investing
-
-  // Buy 1 rumor
-  const rumorRes = await call('POST', '/api/coord/rumor', { token: c1Token, body: { teamId, round: 4 } });
-  check('3.11 rumor purchased', rumorRes.status === 200, rumorRes.status, 200);
-
-  await advancePhase(); // investing -> entry
-  const q4Res = await call('POST', '/api/coord/entry', { token: c1Token, body: {
-    teamId, round: 4,
-    amounts: { [cId('Velocity')]: '20', [cId('UrbanNest')]: '20', [cId('GreenFuel')]: '20', [cId('AgriGrow')]: '20' }
-  }});
-  check('3.12 Q4 entry accepted', q4Res.status === 200, q4Res.status, 200);
-  await advancePhase(); // entry -> revealed
-
-  // Q4 still hidden
-  const boardQ4 = (await call('GET', '/api/board')).data;
-  check('4.7 Q4 standingsHidden=true', boardQ4.standingsHidden === true, boardQ4.standingsHidden, true);
-
-  const admBoardQ4 = await admin('GET', 'board');
-  const admMtQ4 = admBoardQ4.data.teams.find((t) => t.id === teamId);
-  const q4nav = Number(admMtQ4.worth);
-  check('3.13 Q4 NAV = 94.32', Math.abs(q4nav - 94.32) < 0.02, q4nav, 94.32);
-  check('3.14 Q4 no penalty (4 stocks)', !admMtQ4.penalized, admMtQ4.penalized, false);
 
   // Final reveal
   await advancePhase(); // -> final

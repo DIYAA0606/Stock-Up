@@ -1,4 +1,4 @@
-// End-to-end: real HTTP server, 8 teams, all 6 rounds, random chits. Final worth is compared with an
+// End-to-end: real HTTP server, 8 teams, all 3 rounds, random chits. Final worth is compared with an
 // independent floating-point calculation written from the sheet, not from the engine.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -7,17 +7,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { FileStore } from '../src/store-file.js';
 import { createApp } from '../src/server.js';
-const FIXTURE_RETURNS_CSV = `Stock,Q1,Q2,Q3,Q4
-ApexTech,18,22,-45,-12
-MedHeal,-3,4.2,-3.5,8
-GreenFuel,4.5,5.5,-9,12
-UrbanNest,6.3,-6.8,-17,11
-QuickMart,9.1,6,-4,9
-Velocity,15,-7.5,-16,10
-FinBank,17,2.5,-42,-9
-AgriGrow,5,-5.2,-10,7
-Astra Motors,8.4,-8,-18,6
-SkyLink,-1,-4,-15,-5`;
+const FIXTURE_RETURNS_CSV = `Stock,Q1,Q2,Q3
+ApexTech,18,22,-45
+MedHeal,-3,4.2,-3.5
+GreenFuel,4.5,5.5,-9
+UrbanNest,6.3,-6.8,-17
+QuickMart,9.1,6,-4
+Velocity,15,-7.5,-16
+FinBank,17,2.5,-42
+AgriGrow,5,-5.2,-10
+Astra Motors,8.4,-8,-18
+SkyLink,-1,-4,-15`;
 import { signToken, hashPin } from '../src/auth.js';
 
 let server, base, store, ADMIN_PIN, COORD_PIN;
@@ -235,15 +235,20 @@ test('Concurrency: 30 coordinators and 1 admin saving in parallel without lost w
   assert.equal(savedCount, 30, 'All 30 teams must have their round 1 chits recorded');
 });
 
-test('Full 4-quarter event with 8 teams matches an independent calculation', async () => {
+test('Full 3-quarter event with stale 4-quarter settings matches an independent calculation', async () => {
   await admin('POST', 'reset', { confirm: 'RESET', clearTeams: true });
+  store.state.settings.rounds = 4;
+  await store.save();
   await admin('POST', 'returns', { csv: FIXTURE_RETURNS_CSV });
+  const initialState = (await admin('GET', 'state')).data;
+  assert.equal(initialState.settings.rounds, 3);
+  assert.equal(initialState.totalSteps, 13);
   const names = ['Team 1', 'Team 2', 'Team 3', 'Team 4', 'Team 5', 'Team 6', 'Team 7', 'Team 8'];
   assert.equal((await admin('POST', 'teams', { names })).status, 200);
   const rand = mulberry32(2026);
   const model = Object.fromEntries(names.map((n) => [n, 100]));
 
-  for (let round = 1; round <= 4; round++) {
+  for (let round = 1; round <= 3; round++) {
     await admin('POST', 'news', { round, items: [{ headline: `Quarter ${round} headline`, body: 'Body' }] });
     // news -> investing -> entry
     await admin('POST', 'advance', {});
@@ -298,7 +303,7 @@ test('Full 4-quarter event with 8 teams matches an independent calculation', asy
       const worths = pub.teams.map((t) => Number(t.worth));
       assert.deepEqual(worths, [...worths].sort((a, b) => b - a));
     } else {
-      // In Q3 and Q4, public board hides standings (no ranks, no worth, no history)
+      // Q3 standings stay hidden until Final Results (no ranks, no worth, no history)
       assert.equal(pub.standingsHidden, true);
       assert.equal(pub.teams[0].worth, undefined);
       assert.equal(pub.teams[0].rank, undefined);
@@ -310,7 +315,7 @@ test('Full 4-quarter event with 8 teams matches an independent calculation', asy
         assert.ok(Math.abs(Number(t.worth) - model[t.name]) < 0.02, `${t.name} round ${round}: ${t.worth} vs ${model[t.name]}`);
       }
     }
-    if (round < 4) await admin('POST', 'advance', {});
+    if (round < 3) await admin('POST', 'advance', {});
   }
 
   // final: step through the reveal
@@ -326,10 +331,10 @@ test('Full 4-quarter event with 8 teams matches an independent calculation', asy
   // exports and logs
   const csv = await fetch(base + '/api/admin/export.csv', { headers: { 'x-pin': ADMIN_PIN } });
   const text = await csv.text();
-  assert.equal(text.trim().split('\n').length, 1 + 8 * 4);
+  assert.equal(text.trim().split('\n').length, 1 + 8 * 3);
   const audit = (await admin('GET', 'audit')).data.lines;
   assert.ok(audit.some((l) => l.action === 'entry.set'));
-  assert.ok(fs.readdirSync(store.backupDir).length >= 4, 'a backup is written at every reveal');
+  assert.ok(fs.readdirSync(store.backupDir).length >= 3, 'a backup is written at every reveal');
 });
 
 

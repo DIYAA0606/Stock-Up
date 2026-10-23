@@ -9,7 +9,7 @@
 
 ## What is this?
 
-**Guess the Growth** is an event-day tool for running a stock-market simulation game. Teams are given a starting capital of ₹100 Cr and invest across 12 companies over 6 rounds. After every round, actual growth figures are revealed and portfolios are automatically compounded. The projector screen shows the live leaderboard.
+**Guess the Growth** is an event-day tool for running a stock-market simulation game. Teams are given a starting capital of ₹100 Cr and invest across companies over 3 rounds. After every round, actual growth figures are revealed and portfolios are automatically compounded. The projector screen shows the live leaderboard.
 
 ---
 
@@ -79,7 +79,7 @@ ADMIN_PIN=9999 COORDINATOR_PIN=1111 npm start
 
 ### Setup (before the event)
 1. **Admin tab → Teams**: Paste team names, one per line.
-2. **Admin tab → News**: Add news items for each round (1–6).
+2. **Admin tab → News**: Add news items for each round (1–3).
 3. **Admin tab → Growth data**: Paste the final company returns CSV.
 4. **Rehearse**: Run `npm run demo` once to practise with fake data.
 
@@ -93,7 +93,7 @@ The **Run the event** tab has a single **Next** button. The flow per round is:
 | **Capital Update** | Coordinators type each chit into `/entry.html` |
 | **Quarter Results** | Growth tiles revealed; leaderboard updated |
 
-After Round 6: **Final Results** reveals teams from last to first place.
+After Round 3: **Final Results** reveals teams from last to first place.
 
 ### Coordinator keyboard flow
 `Part of team name` → **Enter** → type amounts → **Enter** (moves between companies) → **Ctrl+Enter** (jump to readback) → **Enter** (save)
@@ -119,7 +119,7 @@ Stock-Up/
 │   ├── app.js          # All game logic (advance, entry, results, CSV export)
 │   ├── engine.js       # Pure portfolio math (compounding, ranking)
 │   ├── store.js        # JSON-file persistence with atomic writes + audit log
-│   └── seed.js         # Default 12 companies × 6 quarters seed data
+│   └── seed.js         # Default sample company returns for 3 quarters
 ├── api/
 │   └── index.js        # Vercel serverless function entrypoint
 ├── test/               # 32 automated tests (Node built-in test runner)
@@ -136,7 +136,7 @@ Stock-Up/
 ## Game Rules (enforced by the software)
 
 - **Starting capital:** ₹100 Cr per team (configurable before any chit is entered).
-- **Rounds:** 6 quarters.
+- **Rounds:** Exactly 3 quarters (fixed).
 - **Investment:** A team may not invest more than its available capital. Investing in fewer than 4 companies shows a soft warning.
 - **Uninvested cash:** Carries over as-is. Exit value = `invested × (1 + growth)`.
 - **Growth format:** Plain numbers are fractions (`0.18` = +18%); cells ending in `%` are percentages.

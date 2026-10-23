@@ -82,9 +82,9 @@ graph TD
 - **Audit Logging:** Appends structured JSON lines to `data/audit.log` tracking `{ at, who, action, detail }`.
 
 ### 3.3 Domain Logic & State Machine ([`src/app.js`](file:///Users/devesh/Downloads/guess-the-growth/src/app.js))
-- **Timeline Generator:** `steps(rounds)` creates an array of 25 step descriptors:
-  - Steps 0–23: Rounds 1 to 6 through `['news', 'investing', 'entry', 'revealed']`.
-  - Step 24: `'final'` reveal step.
+- **Timeline Generator:** `steps()` creates an array of 13 step descriptors for the fixed 3-quarter game:
+  - Steps 0–11: Rounds 1 to 3 through `['news', 'investing', 'entry', 'revealed']`.
+  - Step 12: `'final'` reveal step.
 - **Phase Transition Safeguards:**
   - `step(st)`: Advances forward; enforces un-entered team defaults (all cash carried forward) and records audit markers.
   - `back(st)`: Steps backward to rectify organizer mistakes.
@@ -113,7 +113,7 @@ The master state object stored in `state.json` conforms to the following structu
   "version": 1,
   "settings": {
     "startingCapital": "100",
-    "rounds": 6,
+    "rounds": 3,
     "durations": { "info": 20, "news": 5, "investing": 10, "entry": 5 },
     "pins": { "admin": "1234", "coordinator": "5678" }
   },

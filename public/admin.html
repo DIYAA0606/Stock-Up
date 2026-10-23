@@ -486,7 +486,7 @@ async function safety(el) {
         <label for="pm">Penalty mode (&lt;4 stocks held)</label>
         <select id="pm">
           <option value="every_quarter" ${S.settings.penaltyMode === 'every_quarter' ? 'selected' : ''}>every_quarter (apply 15% every quarter)</option>
-          <option value="final_only" ${S.settings.penaltyMode === 'final_only' ? 'selected' : ''}>final_only (apply 15% only at Q4 close)</option>
+          <option value="final_only" ${S.settings.penaltyMode === 'final_only' ? 'selected' : ''}>final_only (apply 15% only at Q3 close)</option>
         </select>
       </div>
       <div><label for="pp">Penalty percent (%)</label><input id="pp" type="number" min="0" max="100" value="${S.settings.penaltyPercent !== undefined ? S.settings.penaltyPercent : 15}"></div>

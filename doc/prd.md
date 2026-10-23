@@ -27,7 +27,7 @@ The application serves three distinct groups on event day:
 
 ### 3.1 Capital & Rounds
 * **Starting Capital:** Each team starts with **₹100.00 Cr** in cash.
-* **Total Rounds:** 6 financial quarters/rounds.
+* **Total Rounds:** Exactly 3 financial quarters/rounds.
 * **Companies:** 12 listed companies with varying sector profiles and growth trajectories.
 
 ### 3.2 Investment Rules
@@ -49,13 +49,13 @@ $$\text{Total Worth}_R = \text{Unallocated Cash}_R + \sum_{c=1}^{12} (\text{Allo
 
 ## 4. Event Lifecycle & State Machine
 
-The event advances through a deterministic timeline of **25 distinct steps** ($6 \times 4 + 1$):
+The event advances through a deterministic timeline of **13 distinct steps** ($3 \times 4 + 1$):
 
 ```mermaid
 stateDiagram-v2
     direction LR
     [*] --> Round1_News
-    state "Round N (1 to 6)" as RoundN {
+    state "Round N (1 to 3)" as RoundN {
         News: News Burst / Company Info
         Investing: Investment Window
         Entry: Capital Update (Chit Entry)
@@ -64,14 +64,14 @@ stateDiagram-v2
         Investing --> Entry
         Entry --> Revealed
     }
-    Revealed --> [*]: If Round 6 completed
+    Revealed --> [*]: If Round 3 completed
     [*] --> Final_Results: Reveal Last to First
 ```
 
 ### 4.1 Phase Breakdown per Round
 1. **News Phase (`news`):**
    * *Round 1:* "Company Information Release" (default: 20 mins) — display presents cards with company descriptions, founders, and sectors.
-   * *Rounds 2–6:* "News Burst" (default: 5 mins) — display showcases market rumors, macroeconomic news, and corporate events.
+   * *Rounds 2–3:* "News Burst" (default: 5 mins) — display showcases market rumors, macroeconomic news, and corporate events.
 2. **Investment Window (`investing`):**
    * Default: 10 mins. Teams analyze news and fill in paper chits. Display shows countdown clock.
 3. **Capital Update (`entry`):**
@@ -80,7 +80,7 @@ stateDiagram-v2
    * Actual quarterly growth figures are revealed on the projector.
    * Leaderboard recalculates and presents updated standings and net worth deltas.
 5. **Final Results (`final`):**
-   * Reached after Round 6 Quarter Results.
+   * Reached after Round 3 Quarter Results.
    * Dramatic reveal: Admin steps through standings from the lowest-ranked team up to the winner (1st place).
 
 ---
@@ -91,7 +91,7 @@ stateDiagram-v2
 - **Auto-Polling:** Background polling every 2 seconds to reflect phase transitions without manual refresh.
 - **Phase-Aware Rendering:**
   - `news` (Round 1): 12-company card grid with sector, logo/initials, and summary.
-  - `news` (Rounds 2–6): Dynamic news flash cards.
+  - `news` (Rounds 2–3): Dynamic news flash cards.
   - `investing` / `entry`: High-visibility countdown timer with "Investment Window Open" or "Entry in Progress". Company data hidden during active decision phases to avoid leaks.
   - `revealed`: Colored growth percentage tiles (green for positive, red for negative) and full leaderboard table.
   - `final`: Step-by-step podium reveal mode controlled by Admin.

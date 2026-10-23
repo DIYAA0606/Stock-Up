@@ -30,8 +30,8 @@
 ### Admin Workflow
 - Use the **Control** tab to advance phases (Info → Investment Window → Capital Update → Reveal).
 - The **Standings** tab shows the live chit dashboard — red rows = teams that have not submitted yet.
-- Leaderboard is public after Q1 and Q2. Q3 and Q4 standings are hidden from the projector and coordinators; only the admin console shows them.
-- After Q4 is revealed, click **Advance** → Final Ceremony → use **Reveal next team** to unveil from last place upward.
+- Leaderboard standings are public after Q1 and Q2. Q3 standings are hidden from the projector and coordinators until the final reveal; only the admin console shows them.
+- After Q3 is revealed, click **Advance** → Final Ceremony → use **Reveal next team** to unveil from last place upward.
 
 ## Adjustments & Corrections
 

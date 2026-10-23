@@ -6,7 +6,7 @@
 
 **Stock-Up (Guess the Growth)** was created for the PICT EDC (Pune Institute of Computer Technology — Entrepreneurship Development Cell) annual flagship competition. 
 
-In this simulation, dozens of collegiate teams receive physical chits and a virtual starting capital of ₹100 Cr. Over six simulated financial quarters, teams allocate capital across 12 volatile companies based on corporate news bulletins, quarterly reports, and economic rumors. The event culminates in a live, high-energy projection screen revealing quarterly returns and dramatic leaderboard shifts.
+In this simulation, dozens of collegiate teams receive physical chits and a virtual starting capital of ₹100 Cr. Over three simulated financial quarters, teams allocate capital across volatile companies based on corporate news bulletins, quarterly reports, and economic rumors. The event culminates in a live, high-energy projection screen revealing quarterly returns and dramatic leaderboard shifts.
 
 ---
 

@@ -10,12 +10,12 @@ const randPin = () => String(crypto.randomInt(1000, 10000));
 
 function freshState() {
   const csv = loadReturnsCsv();
-  const companies = parseReturnsCsv(csv, 4).map((c, i) => ({ id: `c${i + 1}`, ...c }));
+  const companies = parseReturnsCsv(csv, 3).map((c, i) => ({ id: `c${i + 1}`, ...c }));
   return {
     version: 2,
     settings: {
       startingCapital: '100',
-      rounds: 4,
+      rounds: 3,
       durations: { info: 20, news: 5, investing: 10, entry: 5 },
       penaltyMode: 'every_quarter',
       penaltyPercent: 15,

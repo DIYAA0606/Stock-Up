@@ -12,12 +12,12 @@ import {
 import { saveReturnsCsv } from './seed.js';
 
 export const PHASES = ['news', 'investing', 'entry', 'revealed'];
+export const ROUNDS = 3;
 
 export const ROUND_NAMES = {
   1: 'The Boom Begins',
   2: 'The Bubble Grows',
   3: 'The Calamity',
-  4: 'Picking Up the Pieces',
 };
 
 export class HttpError extends Error {
@@ -29,13 +29,13 @@ export class HttpError extends Error {
 }
 
 // ---------- timeline ----------
-export function steps(R = 4) {
+export function steps() {
   const s = [];
-  for (let r = 1; r <= R; r++) for (const phase of PHASES) s.push({ round: r, phase });
-  s.push({ round: R, phase: 'final' });
+  for (let r = 1; r <= ROUNDS; r++) for (const phase of PHASES) s.push({ round: r, phase });
+  s.push({ round: ROUNDS, phase: 'final' });
   return s;
 }
-export const current = (st) => steps(st.settings.rounds || 4)[st.step];
+export const current = (st) => steps()[st.step];
 
 export function phaseLabel(round, phase) {
   if (phase === 'news') return round === 1 ? 'Information Release' : 'News Burst';
@@ -47,7 +47,7 @@ export function phaseLabel(round, phase) {
 
 /** How many rounds' results are visible to everyone. */
 export function revealedThrough(st) {
-  const S = steps(st.settings.rounds || 4);
+  const S = steps();
   let n = 0;
   for (let i = 0; i <= st.step; i++) {
     if (S[i].phase === 'revealed') n = S[i].round;
@@ -82,8 +82,8 @@ function allocFor(st, teamId) {
 export function computeFor(st, team, upTo, returns) {
   return computeTeam({
     startingCapital: startUnits(st),
-    rounds: st.settings.rounds || 4,
-    returns: returns || buildReturns(st.companies, st.settings.rounds || 4),
+    rounds: ROUNDS,
+    returns: returns || buildReturns(st.companies, ROUNDS),
     allocations: allocFor(st, team.id),
     rumors: st.rumors?.[team.id] || {},
     upTo,
@@ -98,7 +98,7 @@ const pct = (a, b) => (b === 0n ? null : Number(((a - b) * 100000n) / b) / 1000)
 
 // ---------- public board ----------
 export function buildBoard(st, { full = false, admin = false } = {}) {
-  const R = st.settings.rounds || 4;
+  const R = ROUNDS;
   const c = current(st);
   const rev = revealedThrough(st);
   const returns = buildReturns(st.companies, R);
@@ -180,7 +180,7 @@ export function buildBoard(st, { full = false, admin = false } = {}) {
     standingsHidden: hideStandings,
     standingsMessage: hideStandings ? 'Standings hidden until final reveal' : null,
     teams,
-    companies: st.companies.map((co) => ({ id: co.id, name: co.name, growth: (full || admin) ? co.returns : co.returns.slice(0, rev) })),
+    companies: st.companies.map((co) => ({ id: co.id, name: co.name, growth: (full || admin) ? co.returns.slice(0, ROUNDS) : co.returns.slice(0, rev) })),
     news: c.phase === 'final' ? [] : st.news[c.round] || [],
   };
 }
@@ -191,7 +191,7 @@ export function entryContext(st, role, requestedRound, teamsOverride = null) {
   const maxRound = c.round;
   let round = c.round;
   if (role === 'admin' && requestedRound) round = Math.min(Math.max(1, Number(requestedRound)), maxRound);
-  const returns = buildReturns(st.companies, st.settings.rounds || 4);
+  const returns = buildReturns(st.companies, ROUNDS);
   const writable = role === 'admin' ? true : round === c.round && (c.phase === 'investing' || c.phase === 'entry');
   const srcTeams = teamsOverride !== null ? teamsOverride : st.teams;
 
@@ -216,7 +216,7 @@ export function entryContext(st, role, requestedRound, teamsOverride = null) {
 
   const rev = revealedThrough(st);
   const teams = srcTeams.map((t) => {
-    const comp = computeFor(st, t, st.settings.rounds || 4, returns);
+    const comp = computeFor(st, t, ROUNDS, returns);
     const row = comp.rounds[round - 1];
     const alloc = (st.allocations[t.id] || {})[round];
 
@@ -287,7 +287,7 @@ export function entryContext(st, role, requestedRound, teamsOverride = null) {
 }
 
 export function applyEntry(st, { teamId, round, amounts, role, coordId }) {
-  const R = st.settings.rounds || 4;
+  const R = ROUNDS;
   const c = current(st);
   const team = st.teams.find((t) => t.id === teamId);
   if (!team) throw new HttpError(404, 'Unknown team');
@@ -355,7 +355,7 @@ export function applyEntry(st, { teamId, round, amounts, role, coordId }) {
 }
 
 export function buyRumor(st, { teamId, round, role, coordId }) {
-  const R = st.settings.rounds || 4;
+  const R = ROUNDS;
   const c = current(st);
   const team = st.teams.find((t) => t.id === teamId);
   if (!team) throw new HttpError(404, 'Unknown team');
@@ -399,7 +399,7 @@ export function buyRumor(st, { teamId, round, role, coordId }) {
 }
 
 export function adjustRumors(st, { teamId, round, count }) {
-  const R = st.settings.rounds || 4;
+  const R = ROUNDS;
   const team = st.teams.find((t) => t.id === teamId);
   if (!team) throw new HttpError(404, 'Unknown team');
   round = Number(round);
@@ -428,7 +428,7 @@ export function adjustRumors(st, { teamId, round, count }) {
 
 // ---------- admin ----------
 export function advance(st, { force = false } = {}) {
-  const S = steps(st.settings.rounds || 4);
+  const S = steps();
   if (st.step >= S.length - 1) throw new HttpError(409, 'Already at the final results');
   const c = current(st);
   if (c.phase === 'entry' && !force) {
@@ -494,7 +494,7 @@ export function removeTeam(st, id) {
 
 export function setNews(st, round, items) {
   round = Number(round);
-  if (!Number.isInteger(round) || round < 1 || round > (st.settings.rounds || 4)) throw new HttpError(400, 'Invalid round');
+  if (!Number.isInteger(round) || round < 1 || round > ROUNDS) throw new HttpError(400, 'Invalid round');
   st.news[round] = (items || [])
     .map((i) => ({ headline: String(i.headline || '').trim(), body: String(i.body || '').trim() }))
     .filter((i) => i.headline || i.body)
@@ -504,7 +504,7 @@ export function setNews(st, round, items) {
 export function setReturns(st, csv) {
   let parsed;
   try {
-    parsed = parseReturnsCsv(csv, st.settings.rounds || 4);
+    parsed = parseReturnsCsv(csv, ROUNDS);
   } catch (e) {
     throw new HttpError(400, e.message);
   }
@@ -592,7 +592,7 @@ export function adminState(st, coordinators = []) {
   const c = current(st);
   const missing =
     c.phase === 'investing' || c.phase === 'entry' ? st.teams.filter((t) => !(st.allocations[t.id] || {})[c.round]).map((t) => t.name) : [];
-  const S = steps(st.settings.rounds || 4);
+  const S = steps();
   const coordByTeam = new Map();
   for (const cd of coordinators) {
     for (const tid of cd.assignedTeams || []) coordByTeam.set(tid, cd.code);
@@ -615,7 +615,7 @@ export function adminState(st, coordinators = []) {
     teams: teamsWithCoord,
     settings: {
       startingCapital: st.settings.startingCapital,
-      rounds: st.settings.rounds || 4,
+      rounds: ROUNDS,
       durations: st.settings.durations,
       penaltyMode: st.settings.penaltyMode || 'every_quarter',
       penaltyPercent: st.settings.penaltyPercent !== undefined ? st.settings.penaltyPercent : 15,
@@ -636,7 +636,7 @@ export function adminState(st, coordinators = []) {
 }
 
 export function exportCsv(st, coordinators = []) {
-  const R = st.settings.rounds || 4;
+  const R = ROUNDS;
   const returns = buildReturns(st.companies, R);
   const coordByTeam = new Map();
   for (const cd of coordinators) {
